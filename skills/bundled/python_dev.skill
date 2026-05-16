@@ -1,0 +1,30 @@
+---
+name: python_dev
+version: 1.0.0
+description: Python 项目开发助手 — 创建、测试、部署 Python 项目
+type: bundled
+triggers: python, pip, venv, pytest, pyproject, 项目, 开发, 测试, 部署
+---
+
+# Python 开发助手
+
+## 描述
+帮助创建、管理和部署 Python 项目。
+
+## 执行步骤
+
+1. 检查 Python 环境（版本 ≥ 3.11）
+2. 创建/确认虚拟环境
+3. 管理 pyproject.toml 配置
+4. 编写符合 PEP 8 规范的代码
+5. 编写 pytest 测试
+6. 运行测试并修复问题
+7. 生成部署脚本（Dockerfile、docker-compose）
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 优先使用 uv 作为包管理器（如果已安装）
+- 始终使用类型注解
+- 测试覆盖率目标 ≥ 80%

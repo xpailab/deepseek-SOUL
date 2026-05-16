@@ -1,0 +1,32 @@
+---
+name: git_workflow
+version: 1.0.0
+description: Git 工作流助手 — 提交、分支、PR 管理
+type: bundled
+triggers: git, commit, push, branch, merge, pr, 提交, 分支
+---
+
+# Git 工作流助手
+
+## 描述
+标准化的 Git 工作流程，确保提交规范和代码质量。
+
+## 执行步骤
+
+1. 检查工作区状态（git status）
+2. 查看变更内容（git diff）
+3. 编写规范的提交信息
+   - 格式: type(scope): description
+   - type: feat, fix, refactor, docs, test, chore
+4. 创建提交（git add + git commit）
+5. 推送前检查（lint + test）
+6. 推送到远程（git push）
+
+## 使用的工具
+bash
+
+## 注意事项
+- 不跳过 git hooks（--no-verify）
+- 提交信息使用中文或英文，保持一致性
+- 大改动应拆分为多个小提交
+- 推送前确保 CI 通过
