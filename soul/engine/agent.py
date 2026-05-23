@@ -669,11 +669,13 @@ class Agent:
 
     def _register_builtin_tools(self) -> None:
         """注册内置工具。"""
+        import platform
         self.tools.register(BashTool.to_tool_def())
         self.tools.register(FileTool.to_tool_def())
         self.tools.register(WebTool.to_tool_def())
         self.tools.register(BrowserTool.to_tool_def())
-        self.tools.register(WindowsTool.to_tool_def())
+        if platform.system() == "Windows":
+            self.tools.register(WindowsTool.to_tool_def())
 
     # ═══════════════════════════════════════════
     # 事件系统

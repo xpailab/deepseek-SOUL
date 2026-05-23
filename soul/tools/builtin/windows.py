@@ -84,6 +84,9 @@ class WindowsTool:
         button_text: str = "",
     ) -> dict[str, Any]:
         """执行 Windows GUI 操作。"""
+        import platform
+        if platform.system() != "Windows":
+            return {"error": "Windows GUI 工具仅在 Windows 系统可用", "success": False}
         try:
             if action == "activate":
                 return await self._activate(window_title)
