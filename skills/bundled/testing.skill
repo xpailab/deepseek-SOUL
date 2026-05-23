@@ -1,0 +1,51 @@
+---
+name: testing
+version: 1.0.0
+description: 测试策略 — 单元/集成/E2E/性能/混沌测试全栈覆盖
+type: bundled
+triggers: 测试, test, pytest, jest, 单元测试, 集成测试, e2e, 覆盖率, mock, 压测, 性能测试, TDD, 回归
+---
+
+# 测试策略
+
+## 描述
+从测试金字塔出发，制定多层次的测试策略。涵盖单元测试→集成测试→E2E→性能→混沌工程。
+
+## 测试金字塔（由底向上）
+
+```
+      /E2E\        5%  — 关键用户流程，验收标准
+     /集成 \       15% — API、数据库、外部服务交互
+    /单元   \      80% — 纯函数、边界条件、异常路径
+```
+
+## 执行步骤
+
+1. 分析被测模块 — 确定关键路径和风险点
+2. 单元测试：
+   - 覆盖正常输入、边界值、异常输入
+   - Mock 外部依赖（数据库、网络、文件系统）
+   - 测试错误处理路径（不只是 happy path）
+3. 集成测试：
+   - 测试真实组件间交互（用 testcontainers/真实数据库）
+   - 验证 API 契约（请求/响应格式、状态码）
+4. E2E 测试：
+   - 覆盖核心用户流程（注册→登录→核心操作）
+   - 使用 Playwright/Cypress
+5. 性能测试：
+   - 基准测试 (pytest-benchmark / k6)
+   - 负载测试 (locust / wrk2)
+6. 生成覆盖率报告，识别未覆盖分支
+
+## 常用框架
+- Python: pytest + pytest-cov + pytest-asyncio + factory_boy
+- Node: vitest + testing-library + msw
+- Go: testing + testify + httptest
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 测试命名: `test_<被测函数>_<场景>_<预期结果>()`
+- 不要为了覆盖率而写测试，以业务风险为导向
+- flaky test 立即修复或跳过，不要留在 CI 中

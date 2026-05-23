@@ -166,7 +166,7 @@ def run(
         console.print()
 
         if output:
-            Path(output).write_text(full, encoding="utf-8")
+            Path(output).expanduser().write_text(full, encoding="utf-8")
             console.print(f"[dim]输出已保存到: {output}[/dim]")
 
         await agent.shutdown()
@@ -235,26 +235,22 @@ def gateway(
     host: str = typer.Option("0.0.0.0", "--host", "-h", help="绑定地址"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="详细日志"),
 ):
-    """启动消息网关服务。"""
-    from soul.gateway.server import Gateway
-
-    cfg_mgr = ConfigManager()
-    config = cfg_mgr.load()
-    config.gateway.port = port
-    config.gateway.host = host
-    config.verbose = verbose
+    """启动消息网关（含 REST API + WebSocket + Web 聊天界面）。"""
 
     async def _run():
+        from soul.gateway.server import Gateway
+        from soul.engine.agent import Agent
+        cfg_mgr = ConfigManager()
+        config = cfg_mgr.load()
+        config.gateway.port = port
+        config.gateway.host = host
+        config.verbose = verbose
+
         agent = Agent(config=config)
         await agent.initialize()
 
         gateway = Gateway(config.gateway)
         await gateway.start(agent, host, port)
-
-        console.print(f"[green]DeepSoul Gateway 已启动[/green]")
-        console.print(f"  地址: ws://{host}:{port}")
-        console.print(f"  健康检查: http://{host}:{port}/health")
-        console.print(f"  按 Ctrl+C 停止")
 
         try:
             while True:

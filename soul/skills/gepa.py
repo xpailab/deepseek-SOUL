@@ -285,12 +285,13 @@ class GEPAEngine:
                 selected.append(best_accuracy)
 
         if len(selected) < k:
-            best_cost = min(population, key=lambda x: x.fitness.cost)
+            # cost/latency 在评估器中已被转为"越高越好"的分数
+            best_cost = max(population, key=lambda x: x.fitness.cost)
             if best_cost not in selected:
                 selected.append(best_cost)
 
         if len(selected) < k:
-            best_latency = min(population, key=lambda x: x.fitness.latency)
+            best_latency = max(population, key=lambda x: x.fitness.latency)
             if best_latency not in selected:
                 selected.append(best_latency)
 

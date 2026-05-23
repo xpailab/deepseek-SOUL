@@ -1,0 +1,55 @@
+---
+name: shell_automation
+version: 1.0.0
+description: Shell 自动化 — 批量文件操作、系统管理、脚本编写
+type: bundled
+triggers:
+  - 批量
+  - 自动化
+  - shell
+  - 脚本
+  - 定时
+  - 系统管理
+  - 重命名
+  - bash
+  - 批处理
+---
+
+# Shell 自动化
+
+## 描述
+编写 Shell 脚本进行批量文件操作、系统管理和自动化任务。
+
+## 执行步骤
+
+1. 明确自动化需求（批量重命名、清理日志、系统监控等）
+2. 分析目标文件和目录结构
+3. 编写 Shell 脚本（bash/sh），添加错误处理
+4. 先用 `--dry-run` 或测试文件验证脚本正确性
+5. 执行并检查结果
+6. 如需定时执行，创建 cron 任务
+
+## 常见场景模板
+
+批量重命名：
+```bash
+for f in *.txt; do mv "$f" "${f%.txt}.md"; done
+```
+
+查找大文件：
+```bash
+find . -type f -size +100M -exec ls -lh {} \;
+```
+
+清理旧日志：
+```bash
+find /var/log -name "*.log" -mtime +30 -delete
+```
+
+## 使用的工具
+bash
+
+## 注意事项
+- 危险操作（删除、覆盖）前必须确认
+- 脚本开头加 `set -euo pipefail`
+- 批量操作前先在子集上测试

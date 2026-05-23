@@ -4,19 +4,48 @@ SQLite FTS5 做精确召回（人名/项目名/命令不丢），
 LLM 做语义理解和摘要。
 
 设计哲学：不依赖向量数据库，零运维，$5 VPS 即可运行。
+
+中文支持：jieba 预分词 → 空格连接 → unicode61 索引，中英混合搜索。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
+import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 import aiosqlite
 
 from soul.types import MemoryEntry, MemoryLayer, MessageRole
+
+# ---------------------------------------------------------------------------
+# jieba 延迟加载 — 纯 Python 中文分词，约 500KB，零 C 依赖
+# ---------------------------------------------------------------------------
+_jieba = None
+
+
+def _get_jieba():
+    global _jieba
+    if _jieba is None:
+        try:
+            import jieba
+            jieba.setLogLevel(20)  # 静默日志
+            _jieba = jieba
+        except ImportError:
+            pass
+    return _jieba
+
+
+# 检测文本是否含 CJK 字符
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text))
 
 
 class IndexedMemory:
@@ -33,6 +62,12 @@ class IndexedMemory:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db: aiosqlite.Connection | None = None
         self._initialized = False
+        # LLM 回调 — MemoryManager 注入，IndexedMemory 无需知道 LLM 细节
+        self._llm: Callable[[str], Awaitable[str]] | None = None
+
+    def set_llm(self, llm: Callable[[str], Awaitable[str]]) -> None:
+        """注入 LLM 回调，启用动态查询扩展和语义重排。"""
+        self._llm = llm
 
     async def _get_db(self) -> aiosqlite.Connection:
         if self._db is None:
@@ -45,10 +80,9 @@ class IndexedMemory:
         return self._db
 
     async def _init_tables(self) -> None:
-        db = self._db
-        if db is None:
-            return
-        await db.executescript("""
+        if self._db is None:
+            raise RuntimeError("数据库连接未初始化")
+        await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -94,21 +128,58 @@ class IndexedMemory:
     ) -> str:
         """存储消息到对话历史。"""
         db = await self._get_db()
-        msg_id = f"msg_{int(time.time() * 1000)}_{hash(content) % 10000}"
+        msg_id = f"msg_{int(time.time() * 1000000)}_{secrets.token_hex(4)}"
         ts = time.time()
 
+        # 中文预分词：插入 FTS5 前分词，conversations 表保留原文
+        tokenized = self._tokenize(content)
+
+        # 事务包裹，确保 conversations 和 FTS 索引的 rowid 一致
+        await db.execute("BEGIN IMMEDIATE")
         await db.execute(
             """INSERT INTO conversations (id, session_id, role, content, timestamp, metadata)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (msg_id, session_id, role, content, ts, json.dumps(metadata or {})),
         )
-        # 同步到 FTS 索引
         await db.execute(
             "INSERT INTO conversation_fts (content, role, session_id) VALUES (?, ?, ?)",
-            (content, role, session_id),
+            (tokenized, role, session_id),
         )
         await db.commit()
         return msg_id
+
+    @staticmethod
+    def _tokenize(text: str) -> str:
+        """对文本进行中文分词（空格连接），英文保持不变。
+
+        jieba 可用时：中文短语切分为空格分隔的 token，
+        unicode61 分词器可正确索引。jieba 不可用时原样返回。
+
+        示例:
+            "部署到生产环境" → "部署 到 生产 环境"
+            "Python asyncio 并发处理" → "Python asyncio 并发 处理"
+            "hello world" → "hello world"  (不变)
+        """
+        if not _has_cjk(text):
+            return text
+
+        jieba = _get_jieba()
+        if jieba is None:
+            return text  # 降级：jieba 未安装时原样返回
+
+        # jieba.cut 可能返回空白 token，过滤掉
+        tokens = [t for t in jieba.cut(text) if t.strip()]
+        if not tokens:
+            return text
+        return " ".join(tokens)
+
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """清理 FTS5 查询中的特殊字符，防止语法错误。"""
+        # 转义 FTS5 特殊字符
+        for char in ('"', '(', ')', '*', '^', 'NEAR', 'AND', 'OR', 'NOT'):
+            query = query.replace(char, f'"{char}"')
+        return query
 
     async def search_fts(
         self,
@@ -116,36 +187,32 @@ class IndexedMemory:
         session_id: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """FTS5 全文搜索 — 精确召回。
-
-        Args:
-            query: 搜索关键词
-            session_id: 限制搜索范围（可选）
-            limit: 返回条数
-
-        Returns:
-            匹配的对话记录列表
-        """
+        """FTS5 全文搜索 — 精确召回（中文自动分词）。"""
         db = await self._get_db()
+        tokenized = self._tokenize(query)
+        sanitized = self._sanitize_fts_query(tokenized)
 
-        if session_id:
-            rows = await db.execute_fetchall(
-                """SELECT c.*, rank FROM conversation_fts f
-                   JOIN conversations c ON f.rowid = c.rowid
-                   WHERE conversation_fts MATCH ? AND c.session_id = ?
-                   ORDER BY rank
-                   LIMIT ?""",
-                (query, session_id, limit),
-            )
-        else:
-            rows = await db.execute_fetchall(
-                """SELECT c.*, rank FROM conversation_fts f
-                   JOIN conversations c ON f.rowid = c.rowid
-                   WHERE conversation_fts MATCH ?
-                   ORDER BY rank
-                   LIMIT ?""",
-                (query, limit),
-            )
+        try:
+            if session_id:
+                rows = await db.execute_fetchall(
+                    """SELECT c.*, rank FROM conversation_fts f
+                       JOIN conversations c ON f.rowid = c.rowid
+                       WHERE conversation_fts MATCH ? AND c.session_id = ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (sanitized, session_id, limit),
+                )
+            else:
+                rows = await db.execute_fetchall(
+                    """SELECT c.*, rank FROM conversation_fts f
+                       JOIN conversations c ON f.rowid = c.rowid
+                       WHERE conversation_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (sanitized, limit),
+                )
+        except Exception:
+            return []  # FTS5 查询失败时返回空结果
 
         results: list[dict[str, Any]] = []
         for row in rows:
@@ -163,20 +230,34 @@ class IndexedMemory:
         self,
         query: str,
         limit: int = 5,
+        use_llm: bool = True,
     ) -> list[dict[str, Any]]:
-        """语义搜索 — 使用关键词扩展进行更广的匹配。
+        """语义搜索 — LLM 动态扩展 + FTS5 精确检索 + LLM 语义重排。
 
-        不依赖向量数据库，而是用 FTS5 的模糊匹配 +
-        关键词扩展实现近似的语义搜索。
+        当 LLM 可用时:
+        1. LLM 动态扩展查询词（覆盖同义/相关表述）
+        2. FTS5 逐一精确检索
+        3. LLM 对结果语义重排
+
+        LLM 不可用时: 退回静态同义词表扩展（向后兼容）。
+
+        Args:
+            query: 搜索查询
+            limit: 返回结果数上限
+            use_llm: 是否启用 LLM 增强（默认 True）
         """
-        # 关键词扩展
-        expanded = self._expand_query(query)
+        # 关键词扩展（LLM 或静态）
+        if use_llm and self._llm:
+            expanded = await self._llm_expand_query(query)
+        else:
+            expanded = self._expand_query_fallback(query)
 
         db = await self._get_db()
         results: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
 
         for term in expanded:
+            tokenized_term = self._tokenize(term)
             try:
                 rows = await db.execute_fetchall(
                     """SELECT c.*, rank FROM conversation_fts f
@@ -184,7 +265,7 @@ class IndexedMemory:
                        WHERE conversation_fts MATCH ?
                        ORDER BY rank
                        LIMIT ?""",
-                    (term, limit),
+                    (tokenized_term, limit),
                 )
                 for row in rows:
                     rid = row["id"]
@@ -203,6 +284,11 @@ class IndexedMemory:
                 continue
 
         results.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        # LLM 语义重排（可用时自动启用）
+        if use_llm and self._llm and len(results) > limit:
+            results = await self._llm_rerank(query, results, top_k=limit)
+
         return results[:limit]
 
     async def store_memory_entry(self, entry: MemoryEntry) -> None:
@@ -327,20 +413,104 @@ class IndexedMemory:
         db = await self._get_db()
         cutoff = time.time() - older_than_days * 86400
 
+        await db.execute("BEGIN IMMEDIATE")
+        rows = await db.execute_fetchall(
+            "SELECT rowid FROM conversations WHERE timestamp < ?", (cutoff,)
+        )
+        rowids = [r[0] for r in rows]
+
+        if rowids:
+            for rid in rowids:
+                await db.execute(
+                    "DELETE FROM conversation_fts WHERE rowid = ?", (rid,)
+                )
+
         cursor = await db.execute(
             "DELETE FROM conversations WHERE timestamp < ?", (cutoff,)
         )
         deleted = cursor.rowcount
 
-        # 清理 FTS 索引
-        await db.execute("INSERT INTO conversation_fts(conversation_fts) VALUES('optimize')")
         await db.commit()
         return deleted
 
-    def _expand_query(self, query: str) -> list[str]:
-        """扩展搜索查询词。"""
+    async def _llm_expand_query(self, query: str) -> list[str]:
+        """LLM 动态查询扩展 — 生成语义相关的搜索词。
+
+        LLM 可用时：根据查询意图生成 3-5 个同义/相关搜索词，
+        覆盖不同表述方式。LLM 不可用时退回静态同义词表。
+        """
+        if self._llm is None:
+            return self._expand_query_fallback(query)
+
+        prompt = f"""你是一个搜索查询扩展助手。给定用户的搜索查询，生成 3-5 个语义相关的搜索词，帮助找到内容不同但含义相关的对话记录。
+
+规则：
+- 用「, 」分隔每个搜索词
+- 搜索词应是独立的关键词或短语（2-6 字）
+- 覆盖同义词、缩写、中英文等价表述
+- 不要重复原查询本身
+- 只输出搜索词，不要解释
+
+查询: {query}
+扩展词:"""
+
+        try:
+            response = await asyncio.wait_for(self._llm(prompt), timeout=5.0)
+            terms = [t.strip() for t in response.strip().split("，")]
+            if not terms:
+                terms = [t.strip() for t in response.strip().split(",")]
+            terms = [t for t in terms if t and t != query]
+            # 原始查询 + LLM 扩展
+            return [query] + terms[:5]
+        except (asyncio.TimeoutError, Exception):
+            return self._expand_query_fallback(query)
+
+    async def _llm_rerank(
+        self, query: str, results: list[dict[str, Any]], top_k: int = 5
+    ) -> list[dict[str, Any]]:
+        """LLM 语义重排 — 根据查询意图重新排序搜索结果。
+
+        LLM 不可用或结果 <= 2 条时跳过重排。
+        """
+        if self._llm is None or len(results) <= 2:
+            return results[:top_k]
+
+        # 构建候选项列表
+        items = []
+        for i, r in enumerate(results[:20]):  # 最多 20 个候选项
+            items.append(f"[{i}] {r['role']}: {r['content'][:150]}")
+
+        prompt = f"""你是一个搜索结果排序助手。根据用户查询，对以下对话记录按语义相关性从高到低排序。
+
+查询: {query}
+
+候选项:
+{chr(10).join(items)}
+
+请只输出排名最高的 {top_k} 个候选项编号，用逗号分隔（如: 3, 7, 1, 0, 5）。
+只输出编号，不要解释。"""
+
+        try:
+            response = await asyncio.wait_for(self._llm(prompt), timeout=5.0)
+            # 解析编号
+            indices = []
+            for part in response.strip().replace("，", ",").split(","):
+                try:
+                    idx = int(part.strip())
+                    if 0 <= idx < len(results):
+                        indices.append(idx)
+                except ValueError:
+                    continue
+            if indices:
+                return [results[i] for i in indices if i < len(results)][:top_k]
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+        return results[:top_k]
+
+    def _expand_query_fallback(self, query: str) -> list[str]:
+        """静态同义词表 — LLM 不可用时的降级方案。"""
         terms = [query]
-        # 简单的同义词/相关词扩展
         synonyms: dict[str, list[str]] = {
             "部署": ["deploy", "上线", "发布", "release"],
             "错误": ["error", "bug", "失败", "异常", "exception"],

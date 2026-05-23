@@ -25,11 +25,13 @@ class ToolGuardrails:
 
     # 危险命令模式
     DANGEROUS_COMMANDS: list[str] = [
+        # Linux
         r"rm\s+(-rf?|--recursive).*\/",    # rm -rf /
+        r"rm\s+(-rf?|--recursive).*\$HOME", # rm -rf $HOME
         r"mkfs\.",                          # 格式化
         r"dd\s+if=",                        # dd
         r">\s*/dev/sd",                     # 覆盖磁盘
-        r"chmod\s+777\s+/",                 # 过度权限
+        r"chmod\s+.*777\s+/",               # 过度权限（含 chmod -R 777 /）
         r"chown\s+-R\s+.*\/",              # 递归 chown
         r":\(\)\s*\{\s*:\s*\|\:",           # fork bomb
         r"wget.*\|.*sh",                    # curl pipe sh
@@ -38,6 +40,13 @@ class ToolGuardrails:
         r"sudo\s+.*rm\s+-rf",              # sudo rm
         r"docker\s+rm\s+-f.*all",          # 删除所有容器
         r"kubectl\s+delete\s+all",          # 删除所有 k8s 资源
+        # Windows
+        r"rmdir\s+/s\s+/q\s+[A-Za-z]:",    # Windows 递归删除盘符
+        r"del\s+/f\s+/s\s+/q\s+[A-Za-z]:", # Windows 强制递归删除
+        r"format\s+[A-Za-z]:",             # Windows 格式化
+        r"diskpart",                        # Windows 磁盘管理
+        r"shutdown\s+/s\b(?!\?)",          # Windows 关机（排除 shutdown /? 帮助）
+        r"reg\s+delete\s+(HKLM|HKEY_LOCAL_MACHINE)", # 删除注册表
     ]
 
     # Prompt injection 检测模式
@@ -94,12 +103,23 @@ class ToolGuardrails:
         # 按工具名检查
         if tool_name in ("bash", "shell", "exec", "run"):
             return self._check_command(arguments.get("command", ""))
+        elif tool_name == "win" or tool_name == "browser":
+            return True, "OK"  # GUI/浏览器工具，无危险操作
         elif tool_name in ("write", "write_file", "edit", "edit_file"):
             return self._check_file_path(arguments.get("file_path", ""))
         elif tool_name in ("read", "read_file"):
             return self._check_read_path(arguments.get("file_path", ""))
         elif tool_name in ("delete", "delete_file", "rm"):
             return self._check_delete_path(arguments.get("file_path", ""))
+        elif tool_name == "file":
+            # 通用 file 工具：根据 operation 参数决定检查类型
+            op = arguments.get("operation", "") or arguments.get("action", "")
+            if op in ("read", "read_file", "cat", "head", "tail"):
+                return self._check_read_path(arguments.get("file_path", ""))
+            elif op in ("delete", "remove", "rm"):
+                return self._check_delete_path(arguments.get("file_path", ""))
+            else:
+                return self._check_file_path(arguments.get("file_path", ""))
 
         return True, "OK"
 
@@ -122,15 +142,34 @@ class ToolGuardrails:
             except ValueError:
                 pass
 
-        # 写入需要检查是否在允许列表中
+        # 写入操作：只要不是系统关键路径，就允许
         if write:
-            for allowed in self.allowed_paths:
+            # 阻止写入系统关键目录
+            system_paths = [
+                Path("/etc"), Path("/boot"), Path("/sys"), Path("/proc"), Path("/dev"),
+                Path("/bin"), Path("/sbin"), Path("/usr/bin"), Path("/usr/sbin"),
+                Path("C:/Windows"), Path("C:/Program Files"), Path("C:/ProgramData"),
+                Path.home() / ".ssh", Path.home() / ".gnupg",
+            ]
+            for sys_path in system_paths:
                 try:
-                    path.relative_to(allowed)
-                    return True, "OK"
+                    if path.relative_to(sys_path):
+                        return False, f"不能写入系统目录: {filepath}"
                 except ValueError:
                     pass
-            return False, f"写入路径不在允许范围内: {filepath}"
+
+            # 如果明确配置了允许路径，优先检查
+            if len(self.allowed_paths) > 1:  # 除了默认workspace还有其他路径
+                for allowed in self.allowed_paths:
+                    try:
+                        path.relative_to(allowed)
+                        return True, "OK"
+                    except ValueError:
+                        pass
+                return False, f"写入路径不在允许范围内: {filepath}"
+
+            # 默认情况：允许写入任何非系统路径
+            return True, "OK"
 
         return True, "OK"
 
@@ -147,20 +186,13 @@ class ToolGuardrails:
         return len(found) == 0, found
 
     def _check_command(self, command: str) -> tuple[bool, str]:
-        """检查命令安全性。"""
+        """检查命令安全性 — 仅拦截危险操作，不限制路径。"""
         if not command.strip():
             return True, "OK"
 
         for pattern in self._dangerous_re:
             if pattern.search(command):
                 return False, f"危险命令被拦截: 匹配模式 '{pattern.pattern}'"
-
-        # 检查是否在允许的路径中操作
-        path_refs = re.findall(r'["\']?(\/[^\s"\']+)["\']?', command)
-        for path_str in path_refs:
-            is_safe, reason = self.check_file_access(path_str, write=True)
-            if not is_safe:
-                return False, reason
 
         return True, "OK"
 

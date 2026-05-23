@@ -1,0 +1,59 @@
+---
+name: docker_ops
+version: 1.0.0
+description: Docker 容器化 — 多阶段构建、Compose 编排、网络与存储管理
+type: bundled
+triggers: docker, 容器, compose, kubernetes, k8s, 镜像, 编排, 网络, 存储卷, 多阶段构建, Dockerfile
+---
+
+# Docker 容器化管理
+
+## 描述
+Docker 全生命周期管理：Dockerfile 最佳实践→多阶段构建→Compose 编排→生产部署注意事项。
+
+## 执行步骤
+
+1. 分析应用架构，确定容器化方案
+2. 编写 Dockerfile 最佳实践：
+   - 选择精简基础镜像（alpine/slim，非必要不用 latest）
+   - 多阶段构建分离构建与运行时依赖
+   - 合并 RUN 指令减少层数，清理缓存
+   - 非 root 用户运行（USER 1000）
+   - HEALTHCHECK 定义健康检查
+3. Docker Compose 编排：
+   - 服务拆分（app + db + redis + worker）
+   - 网络隔离（frontend/backend 分网段）
+   - Volume 持久化（数据库、日志、上传文件）
+   - 环境变量管理和 profiles 按需启动
+4. 镜像优化：
+   - .dockerignore 排除不需要的文件
+   - 构建缓存利用（先 COPY 依赖文件，再 COPY 源码）
+   - 多架构构建 (buildx, linux/amd64 + linux/arm64)
+5. 生产注意事项：
+   - 容器资源限制 (mem_limit, cpus)
+   - 日志驱动配置（json-file + logrotate，避免写满磁盘）
+   - 优雅关闭 (stop_grace_period + SIGTERM 处理)
+   - 健康检查 + restart: unless-stopped
+
+## 常用模板
+```dockerfile
+# 多阶段构建示例
+FROM python:3.12-slim AS builder
+COPY requirements.txt .
+RUN pip install --user -r requirements.txt
+
+FROM python:3.12-slim AS runtime
+COPY --from=builder /root/.local /root/.local
+COPY src/ /app/
+USER 1000
+HEALTHCHECK CMD curl -f http://localhost:8080/health || exit 1
+CMD ["python", "/app/main.py"]
+```
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 不要在容器里存储状态（数据库文件、用户上传），用 volume
+- 一个容器一个职责，不要跑多个进程
+- 镜像标签用语义版本（1.2.3），不用 latest 部署

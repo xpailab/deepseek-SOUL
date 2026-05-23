@@ -1,0 +1,50 @@
+---
+name: data_analysis
+version: 1.0.0
+description: 数据分析 — 读取、清洗、分析、可视化数据
+type: bundled
+triggers:
+  - csv
+  - excel
+  - pandas
+  - 可视化
+  - 统计
+  - 图表
+  - 数据分析
+  - plot
+  - dataframe
+  - 清洗
+---
+
+# 数据分析
+
+## 描述
+读取常见数据格式（CSV/JSON/Excel），进行清洗、分析和可视化。
+
+## 执行步骤
+
+1. 确认数据文件路径和格式
+2. 用 Python pandas 读取数据
+3. 数据概览：行数、列数、类型、缺失值统计
+4. 数据清洗：去重、填充缺失值、类型转换
+5. 统计分析：描述性统计、分组聚合、相关性分析
+6. 可视化：用 matplotlib/seaborn 生成图表
+7. 导出结果（CSV/PNG）
+
+## 常用代码模板
+```python
+import pandas as pd
+df = pd.read_csv("data.csv")
+df.info()
+df.describe()
+df.isnull().sum()
+df["col"].value_counts().plot(kind="bar")
+```
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 优先使用 pandas（已在 Python 生态中）
+- 大文件（>100MB）使用分块读取 `chunksize`
+- 图表保存为 PNG 格式，中文需设置字体

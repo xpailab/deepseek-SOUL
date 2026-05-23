@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 from soul.types import MemoryEntry, MemoryLayer
@@ -30,7 +31,7 @@ class PredictiveMemory:
     3. 习惯检测 — 发现可自动化的重复模式
     """
 
-    def __init__(self):
+    def __init__(self, save_path: str = "~/.soul/predictive.json"):
         # 任务路径图: task_type -> [(next_task_type, probability)]
         self._task_graph: dict[str, list[tuple[str, float]]] = defaultdict(list)
         # 用户习惯: habit_name -> {count, last_time, pattern}
@@ -40,9 +41,36 @@ class PredictiveMemory:
         # 上下文关联: context_key -> [memory_ids]
         self._context_index: dict[str, list[str]] = defaultdict(list)
         # 配置
-        self.min_observations = 3  # 最少观察次数才开始预测
-        self.decay_factor = 0.95   # 时间衰减因子
-        self.max_predictions = 3   # 最多预测条数
+        self.min_observations = 3
+        self.decay_factor = 0.95
+        self.max_predictions = 3
+        self._save_path = Path(save_path).expanduser()
+
+    def save(self) -> None:
+        """持久化预测数据到 JSON 文件。"""
+        import json
+        data = {
+            "task_graph": {k: list(v) for k, v in self._task_graph.items()},
+            "habits": dict(self._habits),
+            "temporal": {str(k): v for k, v in self._temporal_index.items()},
+            "context": dict(self._context_index),
+        }
+        self._save_path.parent.mkdir(parents=True, exist_ok=True)
+        self._save_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def load(self) -> None:
+        """从 JSON 文件恢复预测数据。"""
+        import json
+        if not self._save_path.exists():
+            return
+        try:
+            data = json.loads(self._save_path.read_text(encoding="utf-8"))
+            self._task_graph = defaultdict(list, {k: [(a, p) for a, p in v] for k, v in data.get("task_graph", {}).items()})
+            self._habits = data.get("habits", {})
+            self._temporal_index = defaultdict(list, {int(k): v for k, v in data.get("temporal", {}).items()})
+            self._context_index = defaultdict(list, data.get("context", {}))
+        except Exception:
+            pass
 
     async def observe(
         self,
@@ -76,6 +104,15 @@ class PredictiveMemory:
             self._context_index[ctx_key].append(current_action)
             if len(self._context_index[ctx_key]) > 50:
                 self._context_index[ctx_key] = self._context_index[ctx_key][-25:]
+
+        # 更新习惯追踪
+        habit_name = self._normalize_action(current_action)
+        if habit_name not in self._habits:
+            self._habits[habit_name] = {"count": 0, "last_time": now, "pattern": ""}
+        self._habits[habit_name]["count"] += 1
+        self._habits[habit_name]["last_time"] = now
+        if previous_action:
+            self._habits[habit_name]["pattern"] = f"通常在 '{previous_action}' 之后"
 
     async def predict_next_actions(
         self,

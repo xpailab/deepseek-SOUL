@@ -1,0 +1,67 @@
+---
+name: data_report
+version: 1.0.0
+description: 数据报告生成 — 自动化报表、可视化仪表板、数据叙事
+type: bundled
+triggers: 报表, 报告, 仪表板, 可视化, 数据报告, 周报, 月报, 分析报告, 图表, dashboard, 自动化报告, 数据叙事
+---
+
+# 数据报告与可视化
+
+## 描述
+自动生成专业数据报告：从数据提取→分析→可视化→报告排版的全流程。
+
+## 执行步骤
+
+1. 明确报告需求：
+   - 目标受众（技术/管理/客户）
+   - 核心指标（KPI 定义）
+   - 更新频率（一次性/每周/每月）
+   - 交付格式（Markdown/PDF/HTML Dashboard）
+2. 数据提取：
+   - 数据库查询（SQL）
+   - API 调用
+   - 日志聚合
+   - 多数据源合并
+3. 数据处理：
+   - 数据清洗（去重、填充缺失值、异常检测）
+   - 同比环比计算
+   - 趋势分析（移动平均、线性回归）
+4. 可视化选型：
+   - 趋势 → 折线图
+   - 占比 → 饼图/环形图
+   - 对比 → 柱状图/条形图
+   - 分布 → 直方图/箱线图
+   - 关联 → 散点图/热力图
+5. 数据叙事 (Data Storytelling)：
+   - 先说结论，再说证据
+   - 每个图表配一句话摘要
+   - 标注异常点和可能的原因
+6. 报告生成：
+   - 使用 Jupyter Notebook / Quarto 生成可复现报告
+   - 或使用模板引擎（Jinja2）自动填充数据
+
+## 自动化报告模板
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# 1. 查询数据
+df = pd.read_sql("SELECT ...", conn)
+# 2. 计算指标
+metrics = {
+    "总用户数": len(df),
+    "周增长率": (df["created_at"] >= pd.Timestamp.now() - pd.Timedelta(days=7)).sum(),
+}
+# 3. 生成图表
+df.groupby("date")["count"].plot(kind="line").get_figure().savefig("trend.png")
+# 4. 填充模板 → 输出 Markdown/PDF
+```
+
+## 使用的工具
+bash, file, web
+
+## 注意事项
+- 报告标题包含时间范围（"2026年5月 第3周 周报"）
+- 敏感数据脱敏后再导出
+- 尽量自动化，减少人工复制粘贴

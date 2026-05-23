@@ -83,8 +83,14 @@ class SessionManager:
             state.last_active = time.time()
 
     async def add_messages(self, session_id: str, messages: list[Message]) -> None:
-        for msg in messages:
-            await self.add_message(session_id, msg)
+        """批量添加消息 — 只在最后一次更新元数据。"""
+        state = self._sessions.get(session_id)
+        if not state:
+            return
+        state.messages.extend(messages)
+        state.message_count = len(state.messages)
+        state.token_count += sum(max(1, len(m.content) // 3) for m in messages)
+        state.last_active = time.time()
 
     async def get_history(
         self, session_id: str, last_n: int = 0
@@ -104,12 +110,13 @@ class SessionManager:
             state.last_active = time.time()
 
     async def save(self, session_id: str) -> str:
-        """持久化会话到磁盘。"""
+        """持久化会话到磁盘（原子写入）。"""
         state = self._sessions.get(session_id)
         if not state:
             return ""
 
         filepath = self.sessions_dir / f"{session_id}.json"
+        tmp_path = filepath.with_suffix(".tmp")
         data = {
             "session_id": state.session_id,
             "session_key": state.session_key,
@@ -130,7 +137,8 @@ class SessionManager:
             "sandbox_mode": state.sandbox_mode.value,
             "metadata": state.metadata,
         }
-        filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(filepath)  # 原子替换
         return str(filepath)
 
     async def restore(self, session_id: str) -> SessionState | None:
@@ -139,26 +147,36 @@ class SessionManager:
         if not filepath.exists():
             return None
 
-        data = json.loads(filepath.read_text(encoding="utf-8"))
-        state = SessionState(
-            session_id=data["session_id"],
-            session_key=data.get("session_key", "main"),
-            agent_state=AgentState(data.get("agent_state", "idle")),
-            created_at=data["created_at"],
-            last_active=data["last_active"],
-            message_count=data["message_count"],
-            token_count=data["token_count"],
-            sandbox_mode=SandboxMode(data.get("sandbox_mode", "local")),
-            metadata=data.get("metadata", {}),
-        )
+        try:
+            data = json.loads(filepath.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
 
-        for m in data.get("messages", []):
-            state.messages.append(Message(
-                id=m["id"],
-                role=MessageRole(m["role"]),
-                content=m["content"],
-                timestamp=m.get("timestamp", time.time()),
-            ))
+        try:
+            state = SessionState(
+                session_id=data.get("session_id", session_id),
+                session_key=data.get("session_key", "main"),
+                agent_state=AgentState(data.get("agent_state", "idle")),
+                created_at=data.get("created_at", time.time()),
+                last_active=data.get("last_active", time.time()),
+                message_count=data.get("message_count", 0),
+                token_count=data.get("token_count", 0),
+                sandbox_mode=SandboxMode(data.get("sandbox_mode", "local")),
+                metadata=data.get("metadata", {}),
+            )
+
+            for m in data.get("messages", []):
+                try:
+                    state.messages.append(Message(
+                        id=m.get("id", ""),
+                        role=MessageRole(m.get("role", "user")),
+                        content=m.get("content", ""),
+                        timestamp=m.get("timestamp", time.time()),
+                    ))
+                except (ValueError, KeyError):
+                    continue
+        except (ValueError, KeyError):
+            return None
 
         self._sessions[state.session_id] = state
         return state
@@ -176,7 +194,10 @@ class SessionManager:
 
     async def close(self, session_id: str) -> None:
         """关闭会话。"""
-        await self.save(session_id)
+        try:
+            await self.save(session_id)
+        except Exception:
+            pass  # 保存失败不阻止会话关闭
         self._sessions.pop(session_id, None)
 
     async def list_sessions(self) -> list[dict[str, Any]]:
@@ -210,4 +231,7 @@ class SessionManager:
 
     async def close_all(self) -> None:
         for sid in list(self._sessions.keys()):
-            await self.close(sid)
+            try:
+                await self.close(sid)
+            except Exception:
+                pass  # 单个会话关闭失败不阻止其他会话

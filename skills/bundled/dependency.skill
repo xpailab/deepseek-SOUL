@@ -1,0 +1,50 @@
+---
+name: dependency
+version: 1.0.0
+description: 依赖管理 — 版本冲突解决、依赖树分析、供应链安全、锁文件
+type: bundled
+triggers: 依赖, dependency, 版本冲突, 升级, 锁定, package, pip, npm, cargo, 供应链, 依赖树, 兼容性
+---
+
+# 依赖管理与冲突解决
+
+## 描述
+系统化管理项目依赖：版本锁定→冲突检测→安全升级→供应链审计。
+
+## 执行步骤
+
+1. 依赖审计：
+   - 直接依赖 vs 传递依赖（pipdeptree / npm ls / cargo tree）
+   - 识别"幽灵依赖"（未声明但被使用的依赖）
+   - 识别重复依赖（不同版本的同一包）
+2. 版本策略：
+   - 锁定文件（requirements-lock.txt / package-lock.json / Cargo.lock）必须提交
+   - 语义版本理解: MAJOR.MINOR.PATCH（^1.2.3 = >=1.2.3 <2.0.0）
+   - 主版本升级需人工审查 CHANGELOG
+3. 冲突解决：
+   ```bash
+   pip check              # Python 依赖一致性
+   npm ls                 # Node 依赖树
+   cargo tree --duplicates # Rust 重复依赖
+   ```
+   - 冲突类型：版本约束不兼容/Diamond 依赖（A依赖B和C，B和C依赖D的不同版本）
+   - 解决：升级/降级统一版本、fork 并修复、寻找替代包
+4. 定期升级 (每月一次)：
+   ```bash
+   pip list --outdated
+   npm outdated
+   ```
+   - 优先安全补丁（CVE），其次 bug fix，最后新功能
+   - 升级一个→跑测试→提交（避免批量升级导致问题难以定位）
+5. 供应链安全：
+   - 固定哈希（pip hash / npm integrity）
+   - 私有 registry 代理（DevPI / Verdaccio）
+   - 审查新增依赖的许可证兼容性
+
+## 使用的工具
+bash, file, web
+
+## 注意事项
+- 不要用 `pip install <pkg>` 不加版本号，始终指定版本
+- 锁文件和源文件（pyproject.toml）同步更新，CI 中用 `pip check` 验证
+- 删除未使用的依赖，避免攻击面膨胀

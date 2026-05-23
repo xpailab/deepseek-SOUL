@@ -16,10 +16,23 @@
 from __future__ import annotations
 
 import asyncio
+import locale
 import os
 import shlex
 from pathlib import Path
 from typing import Any
+
+
+def _decode(data: bytes) -> str:
+    sys_enc = locale.getpreferredencoding() or "gbk"
+    for enc in [sys_enc, "utf-8", "gbk", "latin-1"]:
+        try:
+            text = data.decode(enc)
+            if len(text) > 0 and text.count("\ufffd") / len(text) < 0.05:
+                return text
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
 
 from soul.types import SandboxConfig, SandboxMode
 
@@ -96,8 +109,8 @@ class Sandbox:
 
             return {
                 "exit_code": proc.returncode or 0,
-                "stdout": stdout.decode("utf-8", errors="replace")[:10000],
-                "stderr": stderr.decode("utf-8", errors="replace")[:5000],
+                "stdout": _decode(stdout)[:10000],
+                "stderr": _decode(stderr)[:5000],
                 "mode": "local",
                 "cwd": cwd,
             }
@@ -156,7 +169,10 @@ class Sandbox:
                 "mode": "ssh",
             }
 
-        ssh_cmd = f'ssh {ssh_host} "cd {working_dir or "~"} && {command}"'
+        # 安全转义 SSH 命令参数
+        escaped_cmd = shlex.quote(command)
+        escaped_dir = shlex.quote(working_dir or "~")
+        ssh_cmd = f"ssh {shlex.quote(ssh_host)} cd {escaped_dir} && {escaped_cmd}"
         return await self._local_execute(ssh_cmd, "", timeout)
 
     async def _check_docker(self) -> bool:

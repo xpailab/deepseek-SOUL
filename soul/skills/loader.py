@@ -75,13 +75,18 @@ class SkillLoader:
             # 提取纯文本内容（移除 frontmatter）
             body = self._extract_body(content)
 
+            # 处理 YAML 逗号分隔字符串 → list
+            triggers = meta.get("triggers", [])
+            if isinstance(triggers, str):
+                triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+
             skill_meta = SkillMeta(
                 name=meta.get("name", filepath.stem),
                 version=meta.get("version", "1.0.0"),
                 description=meta.get("description", ""),
                 author=meta.get("author", ""),
                 type=SkillType(meta.get("type", "workspace")),
-                triggers=meta.get("triggers", []),
+                triggers=triggers,
                 dependencies=meta.get("dependencies", []),
                 gepa_generation=meta.get("gepa_generation", 0),
                 fitness_score=meta.get("fitness", 0.0),
@@ -104,7 +109,7 @@ class SkillLoader:
             return {}
 
         end_idx = -1
-        for i in range(1, min(len(lines), 20)):
+        for i in range(1, min(len(lines), 50)):
             if lines[i].strip() == "---":
                 end_idx = i
                 break

@@ -1,0 +1,56 @@
+---
+name: project_init
+version: 1.0.0
+description: 项目初始化 — 快速创建各类项目脚手架
+type: bundled
+triggers:
+  - 创建
+  - 初始化
+  - init
+  - 脚手架
+  - 新建
+  - new
+  - 项目
+  - react
+  - vue
+  - nextjs
+  - node
+  - cargo
+  - 前端
+  - 后端
+  - golang
+---
+
+# 项目初始化
+
+## 描述
+快速创建标准化的项目脚手架，包括目录结构、配置文件、依赖管理等。
+
+## 执行步骤
+
+1. 确认项目类型（Python/Node/React/Go/Rust 等）
+2. 创建标准目录结构
+3. 生成 pyproject.toml / package.json / go.mod 等配置文件
+4. 写入 .gitignore
+5. 初始化 Git 仓库
+6. 创建 README.md 模板
+7. 安装基础依赖
+8. 验证项目可以正常启动
+
+## Python 项目标准结构
+```
+project/
+├── src/project/     # 源代码
+├── tests/           # 测试
+├── pyproject.toml   # 配置
+├── .gitignore
+└── README.md
+```
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 优先使用项目类型对应的标准工具（Python=uv, Node=pnpm）
+- .gitignore 要覆盖常见 IDE、OS、临时文件
+- README 要包含安装和使用说明

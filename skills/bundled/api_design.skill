@@ -1,0 +1,44 @@
+---
+name: api_design
+version: 1.0.0
+description: API 设计 — RESTful/GraphQL/gRPC 规范、版本管理、文档生成
+type: bundled
+triggers: api, restful, graphql, grpc, 接口, 端点, swagger, openapi, 版本管理, 限流, 网关, 接口文档, 向后兼容
+---
+
+# API 设计与演进
+
+## 描述
+设计健壮、可演进的 API。覆盖 RESTful 规范、GraphQL schema、gRPC protobuf、版本策略、安全与限流。
+
+## 执行步骤
+
+1. 资源建模 — 识别核心实体和关系，设计 URL 结构
+2. 选择协议：
+   - RESTful: CRUD 标准场景，客户端多样
+   - GraphQL: 复杂嵌套查询，前端频繁变动
+   - gRPC: 内部微服务，高性能要求
+3. 制定命名规范：
+   - URL: `/api/v1/users/{id}/orders`（复数名词、层级关系）
+   - 字段: snake_case (JSON)、驼峰命名由客户端转换
+4. 错误格式标准化：
+   ```json
+   {"error": {"code": "INVALID_PARAM", "message": "...", "details": [...]}}
+   ```
+5. 版本策略：
+   - URL 路径版本: `/v1/`, `/v2/`（最直观）
+   - 请求头版本: `Accept: application/vnd.api.v2+json`
+   - 废弃策略: 标注 deprecated → 警告期 → 移除
+6. 安全与限流：
+   - 认证: Bearer Token / API Key
+   - 限流: 令牌桶/滑动窗口，返回 `429 Too Many Requests`
+   - 输入校验: 白名单 > 黑名单
+7. 文档生成 — OpenAPI 3.0 / GraphQL SDL / protobuf 注释
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 永远不要删除或重命名字段，先加新字段再标记废弃
+- 分页列表必须有默认 limit 上限（防止一次返回百万条）
+- 写操作必须是幂等的（幂等键 idempotency_key）

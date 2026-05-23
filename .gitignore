@@ -28,3 +28,14 @@ Thumbs.db
 # Training data
 training/
 *.jsonl
+.venv
+
+# Claude Code local settings (contains API tokens)
+.claude/settings.json
+.claude/settings.local.json
+
+# Screenshots / temp files
+image.png
+*.jpg
+*.jpeg
+*.gif

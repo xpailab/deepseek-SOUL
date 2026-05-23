@@ -1,14 +1,28 @@
 """Bash 执行工具 — 在沙箱中运行 shell 命令。"""
 
-from __future__ import annotations
-
 import asyncio
+import locale
 import os
 from pathlib import Path
 from typing import Any
 
 from soul.tools.registry import ToolDef
 from soul.types import ToolRisk
+
+
+def _decode_output(data: bytes) -> str:
+    """智能解码命令输出。Windows 上先试 GBK，后试 UTF-8。"""
+    sys_enc = locale.getpreferredencoding() or "gbk"
+    # 按优先级尝试：系统编码 → UTF-8
+    for enc in [sys_enc, "utf-8", "gbk", "latin-1"]:
+        try:
+            text = data.decode(enc)
+            # 如果替换字符占比 < 5%，认为解码正确
+            if len(text) > 0 and text.count("\ufffd") / len(text) < 0.05:
+                return text
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 class BashTool:
@@ -39,6 +53,32 @@ class BashTool:
     def __init__(self, workspace_dir: str = "~/.soul/workspace"):
         self.workspace = Path(workspace_dir).expanduser().resolve()
 
+    # PowerShell 命令特征
+    _PS_CMDS = {"Get-", "Set-", "New-", "Remove-", "Start-", "Stop-", "Invoke-",
+                "Write-", "Out-", "Select-", "Where-", "ForEach-", "Test-",
+                "Format-", "Export-", "Import-", "ConvertTo-", "ConvertFrom-",
+                "Copy-Item", "Move-Item", "Rename-Item", "ls", "dir", "cat",
+                "mkdir", "rm", "cp", "mv", "pwd", "echo", "type", "cd"}
+
+    def _needs_powershell(self, command: str) -> bool:
+        """检查命令是否需要 PowerShell 执行。"""
+        # 明确包含 PS cmdlet 的特征
+        ps_patterns = [
+            "Get-", "Set-", "New-", "Remove-", "Start-", "Stop-", "Invoke-",
+            "Write-", "Out-", "Select-Object", "Where-Object", "ForEach-Object",
+            "Test-", "Format-", "Export-", "Import-", "ConvertTo-", "ConvertFrom-",
+            "Copy-Item", "Move-Item", "Rename-Item",
+        ]
+        cmd_lower = command.lower()
+        for p in ps_patterns:
+            if p.lower() in cmd_lower:
+                return True
+        return False
+
+    def _is_windows(self) -> bool:
+        import platform
+        return platform.system() == "Windows"
+
     async def execute(
         self,
         command: str,
@@ -51,24 +91,64 @@ class BashTool:
             cwd = str(Path(working_dir).expanduser().resolve())
 
         try:
+            proc_env = {**os.environ, "SOUL_WORKSPACE": str(self.workspace)}
+
+            # Windows 上检测是否需要 PowerShell vs cmd
+            if self._is_windows():
+                if self._needs_powershell(command):
+                    # PowerShell 命令 → 包装为 powershell -Command
+                    escaped = command.replace("'", "''")
+                    wrapped = f'powershell -NoProfile -Command "{escaped}"'
+                else:
+                    # 普通 cmd 命令
+                    wrapped = f'cmd /c "{command}"'
+            else:
+                wrapped = command
+
             proc = await asyncio.create_subprocess_shell(
-                command,
+                wrapped,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
-                env={**os.environ, "SOUL_WORKSPACE": str(self.workspace)},
+                env=proc_env,
             )
 
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
 
-            return {
-                "exit_code": proc.returncode,
-                "stdout": stdout.decode("utf-8", errors="replace")[:10000],
-                "stderr": stderr.decode("utf-8", errors="replace")[:5000],
+            result = {
+                "exit_code": proc.returncode or 0,
+                "stdout": _decode_output(stdout)[:10000],
+                "stderr": _decode_output(stderr)[:5000],
                 "cwd": cwd,
             }
+
+            # 如果 cmd 执行失败且看起来像 PS 命令，自动重试用 PowerShell
+            if self._is_windows() and proc.returncode != 0 and not self._needs_powershell(command):
+                ps_keywords = ["Get-ChildItem", "ls", "dir", "cat", "mkdir", "rm", "cp", "mv", "echo", "type", "Select-", "Where-", "ForEach-"]
+                if any(kw in command for kw in ps_keywords):
+                    escaped2 = command.replace("'", "''")
+                    wrapped2 = f'powershell -NoProfile -Command "{escaped2}"'
+                    proc2 = await asyncio.create_subprocess_shell(
+                        wrapped2,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=cwd,
+                        env=proc_env,
+                    )
+                    stdout2, stderr2 = await asyncio.wait_for(
+                        proc2.communicate(), timeout=timeout
+                    )
+                    return {
+                        "exit_code": proc2.returncode or 0,
+                        "stdout": _decode_output(stdout2)[:10000],
+                        "stderr": _decode_output(stderr2)[:5000],
+                        "cwd": cwd,
+                        "retried_with": "powershell",
+                    }
+
+            return result
 
         except asyncio.TimeoutError:
             return {

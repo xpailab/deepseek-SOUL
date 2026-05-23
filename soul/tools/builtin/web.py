@@ -90,6 +90,17 @@ class WebTool:
         headers: dict[str, str] | None = None,
         body: str = "",
     ) -> dict[str, Any]:
+        # SSRF 防护：验证 URL 协议和主机
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return {"error": f"不支持的协议: {parsed.scheme}", "success": False}
+        # 阻止内网地址
+        blocked_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254", "metadata.google.internal")
+        hostname = (parsed.hostname or "").lower()
+        if hostname in blocked_hosts or hostname.startswith("10.") or hostname.startswith("192.168.") or hostname.startswith("172.16."):
+            return {"error": "不允许访问内网地址", "success": False}
+
         client = await self._get_client()
 
         if method == "POST":
@@ -118,65 +129,180 @@ class WebTool:
         return result
 
     async def _search(self, query: str) -> dict[str, Any]:
-        """简单的网页搜索（使用 DuckDuckGo HTML）。"""
+        """多引擎网页搜索 — 自动选择可用引擎。
+
+        优先级: Bing → DuckDuckGo → 百度
+        一个引擎不可用时自动尝试下一个。
+        """
         if not query:
             return {"error": "搜索关键词不能为空", "success": False}
 
         client = await self._get_client()
-        # DuckDuckGo HTML 搜索（非 API，无需密钥）
+
+        # 按优先级尝试各引擎
+        backends = [
+            ("bing", self._search_bing),
+            ("ddg", self._search_ddg),
+            ("baidu", self._search_baidu),
+            ("sogou", self._search_sogou),
+        ]
+
+        for name, handler in backends:
+            try:
+                result = await handler(client, query)
+                if result["results"] or result.get("success"):
+                    result["engine"] = name
+                    return result
+            except Exception:
+                continue
+
+        return {"error": "所有搜索引擎均不可用", "success": False, "results": []}
+
+    # ── Bing 搜索 ──
+
+    async def _search_bing(self, client: httpx.AsyncClient, query: str) -> dict[str, Any]:
+        """Bing 搜索 — 全球可用，中国可访问。"""
+        resp = await client.get(
+            "https://www.bing.com/search",
+            params={"q": query, "setlang": "zh-Hans"},
+            headers={"Accept-Language": "zh-CN,zh;q=0.9"},
+        )
+        if not resp.is_success:
+            return {"success": False, "results": []}
+
+        import re
+        results: list[dict[str, str]] = []
+        # Bing 结果在 <li class="b_algo"> 中
+        blocks = re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', resp.text, re.DOTALL)
+        for block in blocks[:10]:
+            link = re.search(r'<a[^>]*href="(https?://[^"]+)"', block)
+            title = re.search(r'<a[^>]*>(.*?)</a>', block, re.DOTALL)
+            snippet = re.search(r'(?:<p[^>]*>|<div class="b_caption[^"]*"[^>]*>)(.*?)(?:</p>|</div>)', block, re.DOTALL)
+            if link and title:
+                results.append({
+                    "url": link.group(1),
+                    "title": re.sub(r'<[^>]+>', '', title.group(1)).strip(),
+                    "snippet": re.sub(r'<[^>]+>', '', snippet.group(1)).strip() if snippet else "",
+                })
+
+        return {"query": query, "results": results, "total": len(results), "success": True}
+
+    # ── DuckDuckGo 搜索 ──
+
+    async def _search_ddg(self, client: httpx.AsyncClient, query: str) -> dict[str, Any]:
+        """DuckDuckGo HTML 搜索（海外首选，无需 API 密钥）。"""
         resp = await client.get(
             "https://html.duckduckgo.com/html/",
             params={"q": query},
         )
-
         if not resp.is_success:
-            return {"error": f"搜索失败: HTTP {resp.status_code}", "success": False}
+            return {"success": False, "results": []}
 
-        # 简单提取搜索结果
         from html.parser import HTMLParser
+        import re as _re
 
         class DDGParser(HTMLParser):
             def __init__(self):
                 super().__init__()
                 self.results: list[dict[str, str]] = []
-                self._in_result = False
                 self._in_link = False
                 self._in_snippet = False
                 self._current: dict[str, str] = {}
-                self._data = ""
 
             def handle_starttag(self, tag, attrs):
-                attrs_dict = dict(attrs)
-                if tag == "a" and "result__a" in attrs_dict.get("class", ""):
+                d = dict(attrs)
+                if tag == "a" and "result__a" in d.get("class", ""):
                     self._in_link = True
-                    self._current = {"url": attrs_dict.get("href", "")}
-                elif tag == "a" and "result__snippet" in attrs_dict.get("class", ""):
+                    self._current = {"url": _re.sub(r'^/+l/?\?uddg=', '', d.get("href", "")).replace("%3A%2F%2F", "://").replace("%2F", "/")}
+                elif tag == "a" and "result__snippet" in d.get("class", ""):
                     self._in_snippet = True
 
             def handle_data(self, data):
-                if self._in_link:
-                    self._current["title"] = (self._current.get("title", "") + data).strip()
+                if self._in_link and "title" not in self._current:
+                    self._current["title"] = data.strip()
                 elif self._in_snippet:
                     self._current["snippet"] = (self._current.get("snippet", "") + data).strip()
 
             def handle_endtag(self, tag):
                 if self._in_link and tag == "a":
                     self._in_link = False
+                elif self._in_snippet and tag == "a":
+                    self._in_snippet = False
                     if self._current.get("title"):
                         self.results.append(self._current)
                         self._current = {}
-                elif self._in_snippet and tag == "a":
-                    self._in_snippet = False
 
         parser = DDGParser()
         parser.feed(resp.text)
+        return {"query": query, "results": parser.results[:10], "total": len(parser.results), "success": True}
 
-        return {
-            "query": query,
-            "results": parser.results[:10],
-            "total": len(parser.results),
-            "success": True,
-        }
+    # ── 百度搜索 ──
+
+    async def _search_baidu(self, client: httpx.AsyncClient, query: str) -> dict[str, Any]:
+        """百度搜索 — 国内首选。"""
+        resp = await client.get(
+            "https://www.baidu.com/s",
+            params={"wd": query, "rn": "10"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+        )
+        if not resp.is_success:
+            return {"success": False, "results": []}
+
+        import re
+        results: list[dict[str, str]] = []
+        # 百度结果: <div class="result c-container" ...>
+        blocks = re.findall(r'<div[^>]*class="[^"]*result[^"]*c-container[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>', resp.text, re.DOTALL)
+        for block in blocks[:10]:
+            title_m = re.search(r'<a[^>]*>(.*?)</a>', block, re.DOTALL)
+            url_m = re.search(r'(?:href|data-url|mu)="(https?://[^"]+)"', block)
+            snippet_m = re.search(r'<span[^>]*class="[^"]*content-right_[^"]*"[^>]*>(.*?)</span>', block, re.DOTALL)
+            if not snippet_m:
+                snippet_m = re.search(r'class="c-abstract"[^>]*>(.*?)</span>', block, re.DOTALL)
+            if not snippet_m:
+                snippet_m = re.search(r'class="c-span-last"[^>]*>(.*?)</span>', block, re.DOTALL)
+
+            title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+            if title and url_m:
+                results.append({
+                    "url": url_m.group(1),
+                    "title": title,
+                    "snippet": re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip()[:200] if snippet_m else "",
+                })
+
+        return {"query": query, "results": results, "total": len(results), "success": True}
+
+    # ── 搜狗搜索 ──
+
+    async def _search_sogou(self, client: httpx.AsyncClient, query: str) -> dict[str, Any]:
+        """搜狗搜索 — 微信/知乎内容收录较好。"""
+        resp = await client.get(
+            "https://www.sogou.com/web",
+            params={"query": query},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
+        if not resp.is_success:
+            return {"success": False, "results": []}
+
+        import re
+        results: list[dict[str, str]] = []
+        blocks = re.findall(r'<div[^>]*class="[^"]*rb[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>', resp.text, re.DOTALL)
+        if not blocks:
+            blocks = re.findall(r'<div[^>]*class="[^"]*vrwrap[^"]*"[^>]*>(.*?)</div>\s*</div>', resp.text, re.DOTALL)
+
+        for block in blocks[:10]:
+            title_m = re.search(r'<a[^>]*>(.*?)</a>', block, re.DOTALL)
+            url_m = re.search(r'href="(https?://[^"]+)"', block)
+            snippet_m = re.search(r'<p[^>]*class="[^"]*(?:str_info|star-wiki|space-txt)[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+
+            title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+            if title and url_m:
+                results.append({
+                    "url": url_m.group(1),
+                    "title": title,
+                    "snippet": re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip()[:200] if snippet_m else "",
+                })
+
+        return {"query": query, "results": results, "total": len(results), "success": True}
 
     async def close(self) -> None:
         if self._client:

@@ -2,7 +2,7 @@
 # DeepSoul Installer — 一条命令免配置安装
 #
 # 使用:
-#   curl -fsSL https://raw.githubusercontent.com/deepseek-SOUL/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/xpailab/deepseek-SOUL/main/scripts/install.sh | bash
 #   # 或本地安装
 #   bash scripts/install.sh
 #

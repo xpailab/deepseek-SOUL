@@ -53,7 +53,7 @@ class ProceduralMemory:
 
         for skill in self._skills.values():
             score = 0.0
-            # 触发词匹配
+            # 触发词匹配：短词直接子串匹配
             for trigger in skill.meta.triggers:
                 if trigger.lower() in task_lower:
                     score += 2.0
@@ -195,27 +195,26 @@ class ProceduralMemory:
     def _parse_skill_file(self, filepath: Path) -> Skill | None:
         """解析技能文件。"""
         try:
-            content = filepath.read_text(encoding="utf-8")
+            raw_content = filepath.read_text(encoding="utf-8")
             name = filepath.stem
 
-            # 简单解析 frontmatter
-            description = ""
-            version = "1.0.0"
-            triggers: list[str] = []
-            gepa_gen = 0
-            fitness = 0.0
-
-            for line in content.split("\n"):
-                if line.startswith("description:"):
-                    description = line.split(":", 1)[1].strip()
-                elif line.startswith("version:"):
-                    version = line.split(":", 1)[1].strip()
-                elif line.startswith("triggers:"):
-                    triggers = [t.strip() for t in line.split(":", 1)[1].split(",")]
-                elif line.startswith("gepa_generation:"):
-                    gepa_gen = int(line.split(":", 1)[1].strip())
-                elif line.startswith("fitness:"):
-                    fitness = float(line.split(":", 1)[1].strip())
+            # 解析 frontmatter
+            body, frontmatter = self._split_frontmatter(raw_content)
+            if frontmatter:
+                name = frontmatter.get("name", name)
+                description = frontmatter.get("description", "")
+                version = str(frontmatter.get("version", "1.0.0"))
+                triggers = frontmatter.get("triggers", [])
+                if isinstance(triggers, str):
+                    triggers = [t.strip() for t in triggers.split(",")]
+                gepa_gen = int(frontmatter.get("gepa_generation", 0))
+                fitness = float(frontmatter.get("fitness", 0.0))
+            else:
+                description = ""
+                version = "1.0.0"
+                triggers = []
+                gepa_gen = 0
+                fitness = 0.0
 
             meta = SkillMeta(
                 name=name,
@@ -227,13 +226,39 @@ class ProceduralMemory:
                 fitness_score=fitness,
             )
 
-            return Skill(meta=meta, content=content)
+            # 存储 BODY ONLY（不含 frontmatter），防止重复 frontmatter
+            return Skill(meta=meta, content=body.strip())
 
         except Exception:
             return None
 
+    def _split_frontmatter(self, content: str) -> tuple[str, dict]:
+        """分离 frontmatter 和正文。"""
+        lines = content.split("\n")
+        if not lines or lines[0].strip() != "---":
+            return content, {}
+
+        end_idx = -1
+        for i in range(1, min(len(lines), 50)):
+            if lines[i].strip() == "---":
+                end_idx = i
+                break
+
+        if end_idx == -1:
+            return content, {}
+
+        import yaml
+        yaml_text = "\n".join(lines[1:end_idx])
+        try:
+            frontmatter = yaml.safe_load(yaml_text) or {}
+        except Exception:
+            frontmatter = {}
+
+        body = "\n".join(lines[end_idx + 1:])
+        return body, frontmatter
+
     def _save_skill_file(self, skill: Skill) -> None:
-        """保存技能文件到磁盘。"""
+        """保存技能文件到磁盘。content 不含 frontmatter，此处添加。"""
         filepath = self.skills_dir / f"{skill.meta.name}.skill"
         header = f"""---
 name: {skill.meta.name}

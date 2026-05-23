@@ -62,6 +62,7 @@ class ResultClassifier:
         error: str | None = None,
         duration_ms: float = 0,
         timeout_seconds: float = 60.0,
+        call_id: str = "",
     ) -> ToolResult:
         """分类工具执行结果。
 
@@ -71,11 +72,13 @@ class ResultClassifier:
             error: 错误信息
             duration_ms: 执行耗时
             timeout_seconds: 超时阈值
+            call_id: 工具调用 ID（必须匹配 LLM 返回的 tool_call.id）
 
         Returns:
             ToolResult with classification
         """
-        call_id = f"tc_{int(time.time() * 1000)}"
+        if not call_id:
+            call_id = f"tc_{int(time.time() * 1000)}"
 
         # 超时检测
         if duration_ms > timeout_seconds * 1000:

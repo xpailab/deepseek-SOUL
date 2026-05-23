@@ -1,0 +1,58 @@
+---
+name: performance
+version: 1.0.0
+description: 性能优化 — Profiling、缓存策略、连接池、懒加载、CDN
+type: bundled
+triggers: 性能, 优化, 慢, profiling, 缓存, 连接池, cdn, 懒加载, 瓶颈, cpu, 内存, 延迟, throughput, benchmark
+---
+
+# 性能优化
+
+## 描述
+系统化性能优化方法论：测量→分析→优化→验证。不做盲目优化。
+
+## 优化流程
+
+1. 建立基线 — 用 benchmark 工具记录当前指标（QPS/P50/P99延迟/CPU/内存）
+2. 定位瓶颈：
+   - CPU: py-spy / perf / pprof
+   - 内存: memory_profiler / valgrind / heaptrack
+   - IO: iostat / iotop / 慢查询日志
+   - 网络: tcpdump / wireshark / traceroute
+3. 分层优化：
+
+### 应用层
+- 缓存策略: 浏览器缓存 → CDN → 本地缓存 → Redis → 数据库
+- 连接池: 复用连接（数据库/Redis/HTTP），合理设置 pool size
+- 异步化: 非关键路径用消息队列异步处理
+- N+1 消除: ORM eager loading / DataLoader 批量
+
+### 数据库层
+- 索引覆盖: 避免回表查询
+- 读写分离: 读多写少场景
+- 分区表: 按时间/hash 分区
+- 物化视图: 预计算复杂聚合
+
+### 基础设施层
+- CDN 加速静态资源
+- HTTP/2 多路复用 + Gzip/Brotli 压缩
+- 数据库连接池（pgbouncer / HikariCP）
+
+4. 验证 — A/B 对比优化前后指标
+5. 监控 — 持久化性能指标，设置阈值告警
+
+## 常用工具
+```bash
+# Python CPU profiling
+py-spy top --pid <pid>
+# PostgreSQL 查询分析
+SELECT query, calls, mean_exec_time FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
+```
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 没有测量就没有优化，用数据说话
+- 先优化复杂度（算法/数据结构），再优化常数（缓存/连接池）
+- 生产环境做基准测试，开发机结果不准确

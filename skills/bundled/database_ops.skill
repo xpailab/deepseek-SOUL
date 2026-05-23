@@ -1,0 +1,54 @@
+---
+name: database_ops
+version: 1.0.0
+description: 数据库操作 — 迁移、索引优化、查询调优、数据归档
+type: bundled
+triggers: 数据库, database, sql, mysql, postgresql, sqlite, 迁移, migration, 索引, index, 慢查询, 分库分表, 备份, 归档, orm, alembic
+---
+
+# 数据库操作与优化
+
+## 描述
+数据库全生命周期管理：Schema 设计→迁移→索引优化→查询调优→备份归档。
+
+## 执行步骤
+
+1. Schema 设计评估：
+   - 范式选择（3NF vs 反范式）
+   - 字段类型选择（int vs bigint, varchar vs text）
+   - 约束定义（PK/FK/UNIQUE/CHECK）
+2. 迁移策略：
+   - 增量迁移 + 幂等（每个迁移可重复执行）
+   - 大表变更用影子表（先建新表→同步数据→切换）
+   - 避免锁表操作（PostgreSQL: CONCURRENTLY）
+3. 索引优化：
+   - EXPLAIN/EXPLAIN ANALYZE 分析执行计划
+   - 覆盖索引 (covering index) 减少回表
+   - 删除未使用索引（pg_stat_user_indexes）
+4. 查询调优：
+   - 定位慢查询（pg_stat_statements / slow_query_log）
+   - N+1 消除（eager loading / batch query）
+   - 大偏移量分页优化（游标分页/延迟关联）
+5. 数据归档：
+   - 冷热数据分离（按时间分区）
+   - 定期归档旧数据到廉价存储
+
+## 常用命令
+```bash
+# 索引使用率分析 (PostgreSQL)
+SELECT schemaname, tablename, indexname, idx_scan
+FROM pg_stat_user_indexes ORDER BY idx_scan;
+
+# 表膨胀检测
+SELECT schemaname, tablename,
+       pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC LIMIT 10;
+```
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 生产环境迁移前先在 staging 环境测试回滚
+- 大事务拆分小批量（每批 1000-5000 行），避免长事务锁
+- 定期备份 + 恢复演练，至少每月一次

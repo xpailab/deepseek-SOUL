@@ -161,11 +161,26 @@ class FileTool:
         return {"created": str(path), "success": True}
 
     def _resolve_path(self, file_path: str) -> Path:
-        """解析路径，确保在工作空间内。"""
-        path = Path(file_path)
+        """解析路径。允许写入任意非系统路径，不限于工作空间。"""
+        path = Path(file_path).expanduser()
         if not path.is_absolute():
             path = self.workspace / path
-        return path.resolve()
+        resolved = path.resolve()
+
+        # 阻止写入系统关键目录
+        system_paths = [
+            Path("/etc"), Path("/boot"), Path("/sys"), Path("/proc"), Path("/dev"),
+            Path("/bin"), Path("/sbin"), Path("/usr/bin"), Path("/usr/sbin"),
+            Path("C:/Windows"), Path("C:/Program Files"), Path("C:/ProgramData"),
+        ]
+        for sys_path in system_paths:
+            try:
+                resolved.relative_to(sys_path)
+                raise PermissionError(f"不能写入系统目录: {resolved}")
+            except ValueError:
+                pass
+
+        return resolved
 
     @classmethod
     def to_tool_def(cls) -> ToolDef:

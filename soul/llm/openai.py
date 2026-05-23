@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, AsyncIterator
@@ -180,6 +181,8 @@ class OpenAIAdapter(BaseAdapter):
                             )
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
+        # 确保流结束时总是发送finish标记
+        yield StreamChunk(finish_reason="stop")
 
     async def close(self) -> None:
         if self._client:

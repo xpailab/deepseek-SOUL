@@ -1,0 +1,56 @@
+---
+name: security_audit
+version: 1.0.0
+description: 安全审计 — 依赖漏洞、SAST 分析、密钥检测、OWASP Top 10
+type: bundled
+triggers: 安全, 漏洞, security, 审计, audit, 扫描, scan, owasp, 注入, xss, csrf, 密钥泄露, 加密, 认证, 授权
+---
+
+# 安全审计
+
+## 描述
+系统化的安全审计方法论，覆盖依赖安全、代码安全、基础设施安全和运行时安全。
+
+## 审计清单
+
+### 1. 依赖安全
+```bash
+pip-audit                    # Python
+npm audit --audit-level=high # Node.js
+cargo audit                  # Rust
+trivy fs /path/to/project    # 通用扫描
+```
+- 检查直接依赖和传递依赖的已知漏洞 (CVE)
+- 关注有可用修复的漏洞（优先修补 critical/high）
+
+### 2. 代码安全 (SAST)
+- 注入检测：SQL/Command/Code/Log 注入
+- XSS: 用户输入是否未经转义渲染到 HTML
+- CSRF: 是否缺少 CSRF Token
+- 路径穿越: 文件操作是否限制在允许目录内
+- 反序列化: 是否接受不可信来源的序列化数据
+- 硬编码密钥: API Key / Token / 密码是否写在代码里
+
+### 3. 认证与授权
+- 密码存储：是否使用 bcrypt/argon2，禁用 MD5/SHA1
+- 会话管理：Token 过期、刷新机制、登出失效
+- 权限模型：是否最小权限原则，是否有越权风险 (IDOR)
+- 多因素认证：管理后台是否强制 MFA
+
+### 4. 基础设施安全
+- 密钥管理：所有密钥放 Secret Manager（Vault/AWS Secrets Manager），不落盘
+- 网络安全：最小端口暴露、防火墙规则、内网隔离
+- 传输加密：HTTPS (TLS 1.2+)、数据库连接 SSL、内部服务 mTLS
+
+### 5. 审计报告格式
+```
+严重程度 | 漏洞 | 文件:行号 | 修复建议 | 参考 CVE/CWE
+```
+
+## 使用的工具
+bash, file, web
+
+## 注意事项
+- 安全扫描结果不能直接提交到公开仓库
+- 修复后重新扫描确保漏洞已消除
+- 安全审计作为 CI 流水线的强制门禁

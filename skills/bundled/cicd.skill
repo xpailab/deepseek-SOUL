@@ -1,0 +1,57 @@
+---
+name: cicd
+version: 1.0.0
+description: CI/CD 流水线 — GitHub Actions/Jenkins、构建优化、部署策略
+type: bundled
+triggers: cicd, ci/cd, github actions, jenkins, docker, kubernetes, 部署, deploy, 发布, release, 灰度, 滚动更新, 回滚, pipeline
+---
+
+# CI/CD 流水线
+
+## 描述
+构建端到端的持续集成与持续部署流水线，覆盖代码检查→构建→测试→部署→监控全流程。
+
+## 执行步骤
+
+1. 分析项目类型和技术栈
+2. 设计流水线阶段：
+
+```
+Push → Lint & Format → Unit Test → Build → Integration Test → Security Scan → Deploy Staging → E2E Test → Deploy Prod
+```
+
+3. 每个阶段的职责：
+
+### Lint & Format
+- Python: ruff/black, Node: eslint/prettier, Go: golangci-lint
+- 失败即阻断（fail-fast）
+
+### Test
+- 单元测试 + 覆盖率检查（<80% 告警）
+- 集成测试使用真实数据库（testcontainers / 内存 DB）
+
+### Build
+- Docker 多阶段构建，最小化镜像体积
+- Layer cache 优化（依赖层单独 COPY，先于代码层）
+- 产物上传 artifact（用于后续阶段复用）
+
+### Security Scan
+- 依赖漏洞扫描（pip-audit / npm audit / trivy）
+- 密钥泄露检测（truffleHog / gitleaks）
+- SAST 静态分析（bandit / semgrep）
+
+### Deploy
+- 蓝绿部署：两套完整环境，流量一键切换
+- 金丝雀部署：先 5% 流量验证，逐步放大
+- 滚动更新：逐个替换 Pod（Kubernetes RollingUpdate）
+
+4. 回滚策略 — 保留最近 3 个版本，一键回滚（< 5 分钟）
+5. 通知 — 部署成功/失败推送到 Slack/钉钉/飞书
+
+## 使用的工具
+bash, file, web
+
+## 注意事项
+- 敏感信息（API Key/证书）必须用 Secrets 管理，不要硬编码
+- CI 超时时间设置合理（默认 10min，避免资源浪费）
+- 定期清理旧 artifact 和 Docker 镜像，节省存储

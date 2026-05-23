@@ -1,0 +1,55 @@
+---
+name: env_setup
+version: 1.0.0
+description: 开发环境配置 — 安装工具链、配置开发环境
+type: bundled
+triggers:
+  - 安装
+  - setup
+  - 开发环境
+  - 工具链
+  - nvm
+  - rustup
+  - sdk
+  - rust
+  - go
+  - 环境配置
+---
+
+# 开发环境配置
+
+## 描述
+快速配置完整的开发环境：安装语言运行时、包管理器、开发工具等。
+
+## 执行步骤
+
+1. 确认操作系统和已有工具
+2. 按需安装：
+   - Python: uv/pip + venv
+   - Node.js: nvm + pnpm
+   - Rust: rustup + cargo
+   - Go: 官方二进制
+3. 配置 shell 环境变量（PATH、别名）
+4. 安装常用 CLI 工具（ripgrep、fd、bat、jq 等）
+5. 配置 Git（用户名、邮箱、SSH 密钥）
+6. 验证所有工具可用
+
+## 常用命令
+```bash
+# Python
+pip install uv && uv venv && uv pip install -r requirements.txt
+
+# Node.js
+nvm install 22 && pnpm install
+
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+## 使用的工具
+bash, web
+
+## 注意事项
+- 优先使用系统包管理器（apt/brew/winget）
+- 避免全局安装，使用虚拟环境和版本管理器
+- 记录安装步骤，方便复现

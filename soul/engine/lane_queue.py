@@ -222,19 +222,16 @@ class GlobalLane:
         return acquired
 
     def release(self) -> None:
-        """释放全局执行槽位。"""
+        """释放全局执行槽位（线程安全）。"""
         self._semaphore.release()
-        async def _dec():
-            async with self._lock:
-                self._active_count -= 1
-                self.stats.current_active = self._active_count
-        # 简化处理：直接递减
         self._active_count = max(0, self._active_count - 1)
         self.stats.current_active = self._active_count
 
     def remove_session_lane(self, session_id: str) -> None:
-        """移除会话 Lane。"""
-        self._session_lanes.pop(session_id, None)
+        """移除会话 Lane（清理相关资源）。"""
+        lane = self._session_lanes.pop(session_id, None)
+        if lane and lane._debounce_task and not lane._debounce_task.done():
+            lane._debounce_task.cancel()
 
     @property
     def active_sessions(self) -> int:
@@ -274,6 +271,14 @@ class LaneQueue:
         self._interrupt_callbacks: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {}
         # 活跃的 Agent 运行
         self._active_runs: dict[str, Any] = {}
+
+    def track_active(self, session_id: str) -> None:
+        """标记 session 正在流式输出。"""
+        self._active_runs[session_id] = True
+
+    def untrack_active(self, session_id: str) -> None:
+        """取消标记。"""
+        self._active_runs.pop(session_id, None)
 
     def register_steer_callback(
         self, session_id: str, callback: Callable[[str], Coroutine[Any, Any, None]]

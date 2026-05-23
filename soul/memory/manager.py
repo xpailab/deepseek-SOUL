@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from soul.memory.frozen import FrozenMemory
 from soul.memory.indexed import IndexedMemory
 from soul.memory.predictive import PredictiveMemory
 from soul.memory.procedural import ProceduralMemory
+from soul.memory.user_model import UserModel
+from pathlib import Path
+
 from soul.types import (
     MemoryConfig,
     MemoryEntry,
@@ -34,19 +37,52 @@ class MemoryManager:
 
     def __init__(self, config: MemoryConfig | None = None):
         self.config = config or MemoryConfig()
+        skills_dir = str(Path(self.config.workspace_dir).expanduser().parent / "skills")
         self.frozen = FrozenMemory(str(self.config.workspace_dir))
-        self.procedural = ProceduralMemory(str(self.config.workspace_dir) + "/skills")
+        self.procedural = ProceduralMemory(skills_dir)
         self.indexed = IndexedMemory(str(self.config.fts_db_path))
         self.predictive = PredictiveMemory()
+        self.user_model = UserModel(str(self.config.workspace_dir))
+        self.peers = self.user_model.peers  # 快捷访问
         self._initialized = False
+
+    def set_llm(self, llm: "Callable[[str], Awaitable[str]]") -> None:
+        """注入 LLM 回调，启用 Layer 3 的动态查询扩展和语义重排。
+
+        llm 签名: async def llm(prompt: str) -> str
+
+        示例:
+            async def my_llm(prompt: str) -> str:
+                return await openai_adapter.chat(prompt)
+            memory_manager.set_llm(my_llm)
+        """
+        self._llm = llm
+        self.indexed.set_llm(llm)
 
     async def initialize(self) -> None:
         """初始化所有记忆层。"""
         if self._initialized:
             return
+        # L2: 先加载用户技能（~/.soul/skills/），再叠加载入内置技能
         await self.procedural.load_all()
-        self.frozen.snapshot()  # 初始快照
+        await self._load_bundled_skills()
+        self.frozen.snapshot()
+        self.predictive.load()
         self._initialized = True
+
+    async def _load_bundled_skills(self) -> None:
+        """加载项目内置捆绑技能到 ProceduralMemory。"""
+        bundled = Path(__file__).resolve().parent.parent.parent / "skills" / "bundled"
+        if not bundled.exists():
+            return
+        from soul.skills.loader import SkillLoader
+        loader = SkillLoader(str(self.procedural.skills_dir), str(bundled))
+        skills = await loader.load_all()
+        for s in skills:
+            if not self.procedural.get(s.meta.name):
+                self.procedural._skills[s.meta.name] = s
+                for t in s.meta.triggers:
+                    self.procedural._index.setdefault(t.lower(), []).append(s.meta.name)
 
     # ═══════════════════════════════════════════
     # 统一查询 API
@@ -134,6 +170,11 @@ class MemoryManager:
             if pred_prompt:
                 sections.append(pred_prompt)
 
+        # 用户模型 — Multi-Peer 角色 + 辩证推理画像
+        user_fragment = self.user_model.get_full_prompt_fragment()
+        if user_fragment:
+            sections.append(user_fragment)
+
         return "\n\n".join(sections)
 
     # ═══════════════════════════════════════════
@@ -201,9 +242,10 @@ class MemoryManager:
         previous: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
-        """观察用户行为（Layer 4）。"""
+        """观察用户行为（Layer 4 + 用户模型）。"""
         if self.config.predictive_enabled:
             await self.predictive.observe(action, previous, context)
+        self.user_model.observe_message(action, role="user")
 
     # ═══════════════════════════════════════════
     # 维护 API
@@ -244,4 +286,6 @@ class MemoryManager:
         }
 
     async def close(self) -> None:
+        self.predictive.save()  # 持久化预测数据
+        self.user_model.save()  # 持久化用户画像
         await self.indexed.close()

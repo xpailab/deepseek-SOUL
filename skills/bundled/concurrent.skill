@@ -1,0 +1,52 @@
+---
+name: concurrent
+version: 1.0.0
+description: 并发编程 — asyncio/线程/进程池、锁策略、死锁预防、协程
+type: bundled
+triggers: 并发, 异步, async, await, 线程, 进程, 协程, 死锁, 锁, 信号量, 队列, 竞态, 线程安全, asyncio, threading, multiprocessing
+---
+
+# 并发与异步编程
+
+## 描述
+正确处理并发场景：异步 IO、多线程、多进程的选择与组合，避免常见的并发陷阱。
+
+## 执行步骤
+
+1. 分析并发需求：
+   - IO 密集型 → asyncio（协程）+ 少量线程
+   - CPU 密集型 → multiprocessing（进程池）
+   - 混合型 → 进程池 + 每进程内 asyncio
+2. 选择并发模型：
+
+| 场景 | Python | Node.js | Go |
+|------|--------|---------|-----|
+| IO密集 | asyncio | async/await | goroutine |
+| CPU密集 | ProcessPoolExecutor | worker_threads | goroutine |
+| 定时任务 | asyncio.create_task | setTimeout | time.After |
+
+3. 共享状态保护：
+   - asyncio.Lock / threading.Lock / multiprocessing.Lock
+   - 优先使用消息传递（Queue/Channel）而非共享内存
+   - 原子操作保证（数据库行锁 / Redis 分布式锁）
+4. 死锁预防：
+   - 固定加锁顺序，所有协程/线程按同一顺序获取
+   - 锁超时（timeout），超时后释放并重试
+   - 避免嵌套锁，减少锁粒度
+5. 资源管理：
+   - 连接池大小 = (2 * CPU核心) + 有效硬盘数
+   - Semaphore 限制并发数，避免打爆下游
+   - 优雅取消：asyncio.CancelledError / context.Context.Done()
+
+## 反模式警示
+- 在 async 函数里调用 time.sleep() → 应该用 asyncio.sleep()
+- 在 async 函数里执行 CPU 密集计算 → 应该 run_in_executor()
+- 无界创建协程导致内存溢出 → 用 Semaphore / TaskGroup
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 并发 bug 难以复现，加足够的日志和 trace_id
+- 优先使用高层抽象（asyncio.TaskGroup, concurrent.futures）
+- 生产环境用分布式追踪（OpenTelemetry）串联调用链

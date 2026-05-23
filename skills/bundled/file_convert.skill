@@ -1,0 +1,47 @@
+---
+name: file_convert
+version: 1.0.0
+description: 文件格式转换 — PDF、图片、文档互转
+type: bundled
+triggers:
+  - pdf
+  - pandoc
+  - markdown
+  - 图片
+  - convert
+  - 转换
+  - docx
+  - 导出
+  - 压缩
+  - magick
+---
+
+# 文件格式转换
+
+## 描述
+处理常见文件格式转换：Markdown 转 PDF、图片格式转换、文档压缩等。
+
+## 执行步骤
+
+1. 确认源文件路径和目标格式
+2. 检查所需工具是否已安装（pandoc、ImageMagick、libreoffice 等）
+3. 如工具缺失，自动安装（pip install / apt-get / brew）
+4. 执行转换命令
+5. 验证输出文件是否正常生成
+6. 清理临时文件
+
+## 常用转换命令
+
+- Markdown → PDF: `pandoc input.md -o output.pdf --pdf-engine=xelatex`
+- Markdown → DOCX: `pandoc input.md -o output.docx`
+- PNG → JPG: `magick input.png output.jpg`
+- 图片压缩: `magick input.jpg -quality 85 output.jpg`
+- PDF 合并: `pdfunite *.pdf output.pdf`
+
+## 使用的工具
+bash
+
+## 注意事项
+- 首次使用可能需要安装 pandoc (`apt install pandoc` 或 `brew install pandoc`)
+- 中文 PDF 需要安装中文字体
+- 转换前备份原始文件

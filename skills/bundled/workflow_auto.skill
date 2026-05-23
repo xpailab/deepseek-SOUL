@@ -1,0 +1,65 @@
+---
+name: workflow_auto
+version: 1.0.0
+description: 工作流自动化 — 定时任务、批处理、通知集成、办公自动化
+type: bundled
+triggers: 工作流, 自动化, 定时, cron, 批处理, 通知, 邮件, 钉钉, 飞书, 企业微信, webhook, 流程, 审批, 提醒
+---
+
+# 工作流自动化
+
+## 描述
+自动化日常办公流程：定时任务、数据同步、消息通知、审批流程、文件管理。
+
+## 常见自动化场景
+
+### 1. 定时任务
+```python
+# Python: APScheduler / Celery Beat
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+scheduler = AsyncIOScheduler()
+scheduler.add_job(sync_data, "cron", hour=2, minute=30)  # 每天凌晨2:30
+scheduler.start()
+```
+场景：数据备份、日志清理、报表生成、缓存预热
+
+### 2. 批处理
+```bash
+# 批量图片压缩
+find ./images -name "*.png" | xargs -I {} pngquant --quality=80 {}
+# 批量文件重命名
+for f in *.log; do mv "$f" "$(date +%Y%m%d)_$f"; done
+```
+
+### 3. 消息通知集成
+- 钉钉机器人: POST webhook 发送 Markdown 消息
+- 飞书机器人: 卡片消息 + 交互按钮
+- 企业微信: 应用消息推送
+- 邮件: SMTP 发送报告附件
+```python
+import requests
+def dingtalk_notify(title, content):
+    requests.post(webhook_url, json={
+        "msgtype": "markdown",
+        "markdown": {"title": title, "text": content}
+    })
+```
+
+### 4. 文件自动化
+- 监控目录变化（watchdog），自动处理新文件
+- 文件分类归档（按日期/类型移动到对应目录）
+- PDF 合并/拆分/加水印
+
+### 5. 审批流程自动化
+- 提交 PR → 自动通知 reviewer
+- 定时检查 24h 未处理的 PR 并催办
+- 部署审批 → 自动检查 checklist → 通过后自动部署
+
+## 使用的工具
+bash, file, web
+
+## 注意事项
+- 自动化前先手动跑通全流程，确认无误
+- 关键操作保留人工确认环节（财务、权限变更）
+- 所有自动化任务添加日志记录和错误通知
+- 处理敏感数据时注意权限最小化

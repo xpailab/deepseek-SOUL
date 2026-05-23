@@ -6,6 +6,7 @@ DeepSeek API 兼容 OpenAI 格式，所以此适配器
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, AsyncIterator
@@ -68,13 +69,19 @@ class DeepSeekAdapter(BaseAdapter):
         for attempt in range(self.config.max_retries):
             try:
                 resp = await client.post("/chat/completions", json=payload)
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    body = resp.text[:2000]
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {resp.status_code}: {body}",
+                        request=resp.request,
+                        response=resp,
+                    )
                 data = resp.json()
                 break
             except httpx.HTTPStatusError as e:
                 if attempt == self.config.max_retries - 1:
                     return LLMResponse(
-                        content=f"API Error: {e.response.status_code}",
+                        content=f"API Error: {e.response.status_code}\n{e.response.text[:500] if hasattr(e, 'response') else str(e)}",
                         finish_reason="error",
                         duration_ms=(time.time() - start) * 1000,
                     )
@@ -85,6 +92,7 @@ class DeepSeekAdapter(BaseAdapter):
 
         choice = data["choices"][0]
         content = choice["message"].get("content", "") or ""
+        reasoning = choice["message"].get("reasoning_content", "") or ""
         usage = data.get("usage", {})
 
         tool_calls = []
@@ -111,6 +119,7 @@ class DeepSeekAdapter(BaseAdapter):
                 "prompt_tokens": usage.get("prompt_tokens", 0),
                 "completion_tokens": usage.get("completion_tokens", 0),
             },
+            reasoning_content=reasoning,
             duration_ms=(time.time() - start) * 1000,
             model=data.get("model", self.config.model),
         )
@@ -152,6 +161,9 @@ class DeepSeekAdapter(BaseAdapter):
                     if "content" in delta and delta["content"]:
                         yield StreamChunk(content=delta["content"])
 
+                    if "reasoning_content" in delta and delta["reasoning_content"]:
+                        yield StreamChunk(reasoning_content=delta["reasoning_content"])
+
                     if "tool_calls" in delta:
                         for tc in delta["tool_calls"]:
                             idx = tc.get("index", 0)
@@ -191,6 +203,8 @@ class DeepSeekAdapter(BaseAdapter):
 
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
+        # 确保流结束时总是发送finish标记
+        yield StreamChunk(finish_reason="stop")
 
     async def close(self) -> None:
         if self._client:

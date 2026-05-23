@@ -109,45 +109,78 @@ class TrajectoryGenerator:
         return generated_trajs
 
     async def _execute_task(self, agent: Any, task: str) -> Trajectory | None:
-        """执行单个任务并记录轨迹。"""
+        """执行单个任务并记录完整轨迹（含工具调用链）。"""
         start = time.time()
         steps: list[TrajectoryStep] = []
-        session_id = ""
+        session_id = f"mlops_{int(time.time() * 1000000)}"
+        has_tool_error = False
 
         try:
-            # 使用 Agent 执行任务
-            result = await agent.chat(task)
+            # 使用流式 chat 捕获完整执行过程
+            full_response: list[str] = []
+            tool_calls_seen: list[str] = []
 
-            # 从 Agent 会话中提取步骤
-            session = await agent.sessions.get(session_id) if session_id else None
+            async for chunk in agent.chat_stream(task, session_id=session_id):
+                if chunk.content:
+                    full_response.append(chunk.content)
+                if chunk.tool_call:
+                    tool_calls_seen.append(f"{chunk.tool_call.name}")
 
-            # 构建轨迹
-            step = TrajectoryStep(
-                step_index=0,
-                role="user",
-                content=task,
-            )
-            steps.append(step)
+            result = "".join(full_response)
 
-            step = TrajectoryStep(
-                step_index=1,
-                role="assistant",
-                content=result,
-                duration_ms=(time.time() - start) * 1000,
-            )
-            steps.append(step)
+            # 从会话历史提取详细步骤
+            history = await agent.sessions.get_history(session_id)
+            for i, msg in enumerate(history):
+                if msg.role in ("user", "USER"):
+                    steps.append(TrajectoryStep(
+                        step_index=len(steps),
+                        role="user",
+                        content=msg.content,
+                    ))
+                elif msg.role in ("assistant", "ASSISTANT"):
+                    tc_list = [tc for tc in msg.tool_calls] if msg.tool_calls else []
+                    steps.append(TrajectoryStep(
+                        step_index=len(steps),
+                        role="assistant",
+                        content=msg.content or "",
+                        tool_calls=tc_list if tc_list else None,
+                    ))
+                elif msg.role in ("tool", "TOOL"):
+                    steps.append(TrajectoryStep(
+                        step_index=len(steps),
+                        role="tool",
+                        content=msg.content or "",
+                        metadata=msg.metadata or {},
+                    ))
+                    # 检测工具错误
+                    if msg.content and any(
+                        e in str(msg.content).lower()
+                        for e in ("error", "failed", "denied", "timeout", "失败")
+                    ):
+                        has_tool_error = True
 
+            # 如果会话历史为空（fallback），构建基本轨迹
+            if not steps:
+                steps.append(TrajectoryStep(step_index=0, role="user", content=task))
+                steps.append(TrajectoryStep(
+                    step_index=1,
+                    role="assistant",
+                    content=result,
+                    duration_ms=(time.time() - start) * 1000,
+                ))
+
+            success = bool(result) and not has_tool_error
             return Trajectory(
-                session_id=session_id or "batch",
+                session_id=session_id,
                 task=task,
                 steps=steps,
-                success=True,
+                success=success,
                 total_duration_ms=(time.time() - start) * 1000,
             )
 
         except Exception as e:
             return Trajectory(
-                session_id=session_id or "batch",
+                session_id=session_id,
                 task=task,
                 steps=steps,
                 success=False,

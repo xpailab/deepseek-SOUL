@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
@@ -40,6 +39,7 @@ class AgentState(str, Enum):
     THINKING = "thinking"
     EXECUTING = "executing"
     STREAMING = "streaming"
+    COMPRESSING = "compressing"
     WAITING = "waiting"
     ERROR = "error"
     TERMINATED = "terminated"
@@ -119,7 +119,7 @@ class ToolResult(BaseModel):
     result: Any = None
     error: str | None = None
     duration_ms: float = 0
-    classification: str = "success"  # success, partial, denied, failure, timeout
+    classification: Literal["success", "partial", "denied", "failure", "timeout", "rate_limited"] = "success"
 
 
 class Message(BaseModel):
@@ -129,13 +129,14 @@ class Message(BaseModel):
     content: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
+    reasoning_content: str = ""  # DeepSeek 思考模式：内部推理过程，发回 API 时必须原样保留
     timestamp: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("content")
     @classmethod
     def content_not_empty(cls, v: str) -> str:
-        if not v and not v.strip():
+        if not v.strip():
             return ""
         return v
 
@@ -143,9 +144,11 @@ class Message(BaseModel):
 class StreamChunk(BaseModel):
     """流式输出块。"""
     content: str = ""
+    reasoning_content: str = ""  # DeepSeek 思考模式
     tool_call: ToolCall | None = None
+    tool_result: ToolResult | None = None  # 工具执行结果（前端放可折叠区）
     finish_reason: str | None = None
-    usage: dict[str, int] | None = None
+    usage: dict[str, Any] | None = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -177,10 +180,10 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     api_base: str = ""
     max_tokens: int = 8192
-    temperature: float = 0.7
-    top_p: float = 0.9
-    timeout: float = 120.0
-    max_retries: int = 3
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
+    timeout: float = Field(default=300.0, gt=0)  # 增加到5分钟以支持复杂任务
+    max_retries: int = Field(default=3, ge=0)
 
 
 class LaneConfig(BaseModel):
@@ -191,7 +194,7 @@ class LaneConfig(BaseModel):
     cron_concurrent: int = 2         # Cron lane 并发上限
     default_mode: QueueMode = QueueMode.ADAPTIVE
     debounce_ms: int = 1000          # 防抖延迟
-    cap: int = 20                    # 队列容量上限
+    cap: int = Field(default=20, ge=1)   # 队列容量上限
     drop_policy: Literal["old", "new", "summarize"] = "summarize"
 
 
@@ -218,7 +221,7 @@ class SkillConfig(BaseModel):
 
 class GatewayConfig(BaseModel):
     """网关配置。"""
-    port: int = 18789
+    port: int = Field(default=18789, ge=1, le=65535)
     host: str = "0.0.0.0"
     channels: list[str] = Field(default_factory=lambda: ["cli"])
     dm_policy: Literal["open", "pairing", "whitelist"] = "pairing"
@@ -344,6 +347,7 @@ class TrajectoryStep(BaseModel):
     thinking: str | None = None
     duration_ms: float = 0
     token_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Trajectory(BaseModel):

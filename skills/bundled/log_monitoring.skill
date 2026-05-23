@@ -1,0 +1,69 @@
+---
+name: log_monitoring
+version: 1.0.0
+description: 日志与监控 — 结构化日志、指标采集、告警规则、分布式追踪
+type: bundled
+triggers: 日志, 监控, 告警, 指标, tracing, 观测, 链路追踪, 日志分析, grafana, prometheus, elk, 排错
+---
+
+# 日志与监控体系
+
+## 描述
+构建可观测性三大支柱：日志 (Logging)、指标 (Metrics)、链路追踪 (Tracing)。
+
+## 三支柱体系
+
+```
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│  Logging │  │ Metrics  │  │ Tracing  │
+│  发生了什么 │  │ 多少/多快 │  │ 在哪发生  │
+└────┬─────┘  └────┬─────┘  └────┬─────┘
+     └──────────────┼──────────────┘
+                    ▼
+            可观测性 (Observability)
+```
+
+## 执行步骤
+
+### 1. 结构化日志
+```python
+# 使用 structlog / winston / zap
+logger.info("order_created", order_id="123", user_id="456", amount=99.9)
+```
+- 每条日志必须 JSON 格式，包含 trace_id、timestamp、level
+- 日志级别规范: DEBUG(开发) → INFO(关键事件) → WARN(异常情况) → ERROR(需要人工介入)
+- 敏感信息脱敏（密码、Token、身份证号）
+
+### 2. 指标采集
+- 业务指标: 注册数、订单量、支付成功率
+- 技术指标: QPS、P50/P99 延迟、错误率
+- 资源指标: CPU、内存、磁盘、连接数
+- 技术栈: Prometheus + Grafana / Datadog / 云监控
+
+### 3. 告警规则
+- 错误率 > 1% → 紧急
+- P99 延迟 > 2x 基线 → 警告
+- 磁盘使用 > 85% → 通知
+- 关键业务指标骤降 50% → 紧急
+- 告警疲劳预防: 同类告警聚合，30 分钟内不重复
+
+### 4. 分布式追踪
+- 方案: OpenTelemetry + Jaeger/Zipkin
+- 每个请求生成唯一 trace_id 并透传全链路
+- 慢请求自动采样（> 500ms 100% 采样）
+
+## 常用命令
+```bash
+# 实时分析日志
+tail -f app.log | jq 'select(.level=="ERROR")'
+# 统计错误类型
+cat app.log | jq -r '.error_type' | sort | uniq -c | sort -rn
+```
+
+## 使用的工具
+bash, file
+
+## 注意事项
+- 日志不要影响主流程性能（异步写、批量刷盘）
+- 生产环境日志级别设为 WARN 或 INFO（DEBUG 产生大量 IO）
+- 日志保留策略：热数据 7 天、温数据 30 天、冷数据 90 天归档

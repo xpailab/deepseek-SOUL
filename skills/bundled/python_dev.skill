@@ -3,7 +3,7 @@ name: python_dev
 version: 1.0.0
 description: Python 项目开发助手 — 创建、测试、部署 Python 项目
 type: bundled
-triggers: python, pip, venv, pytest, pyproject, 项目, 开发, 测试, 部署
+triggers: python, pip, venv, pytest, pyproject, django, flask, fastapi, 爬虫
 ---
 
 # Python 开发助手

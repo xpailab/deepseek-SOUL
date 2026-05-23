@@ -23,6 +23,12 @@ from typing import Any, AsyncIterator
 from soul.config.manager import ConfigManager
 from soul.engine.lane_queue import LaneQueue, QueueItem
 from soul.engine.session import SessionManager
+from soul.engine.task_stages import (
+    TaskStagePlanner,
+    TaskPlan,
+    build_stage_prompt,
+    parse_stage_completion,
+)
 from soul.llm.registry import AdapterRegistry
 from soul.memory.manager import MemoryManager
 from soul.prompt.builder import PromptBuilder
@@ -30,6 +36,8 @@ from soul.prompt.compressor import ContextCompressor
 from soul.tools.builtin.bash import BashTool
 from soul.tools.builtin.file import FileTool
 from soul.tools.builtin.web import WebTool
+from soul.tools.builtin.browser import BrowserTool
+from soul.tools.builtin.windows import WindowsTool
 from soul.tools.classifier import ResultClassifier
 from soul.tools.guardrails import ToolGuardrails
 from soul.tools.registry import ToolRegistry
@@ -38,6 +46,7 @@ from soul.types import (
     AgentEvent,
     AgentState,
     LLMConfig,
+    MemoryLayer,
     Message,
     MessageRole,
     QueueMode,
@@ -47,6 +56,57 @@ from soul.types import (
     ToolCall,
     ToolResult,
 )
+
+
+def _build_task_report(
+    task: str, rounds: int, results: list, stopped_by_limit: bool, stopped_by_fails: bool
+) -> str:
+    """生成任务执行报告。"""
+    if not results:
+        return ""
+
+    total = len(results)
+    succeeded = sum(1 for r in results if r.success)
+    failed = total - succeeded
+
+    # 简化状态描述
+    if stopped_by_limit:
+        status = "🛑 已达到执行上限(50轮/100次工具调用)，任务被迫中止"
+    elif stopped_by_fails:
+        status = "❌ 多次失败导致任务中止"
+    elif failed == 0 and succeeded > 0:
+        status = "✅ 任务执行成功"
+    elif succeeded > 0:
+        status = f"⚠️ 任务部分完成 ({succeeded}/{total} 成功)"
+    else:
+        status = "❌ 任务执行失败"
+
+    # 只显示失败的工具和关键成功的工具
+    key_results = []
+    for r in results:
+        if not r.success:  # 显示失败的
+            key_results.append(f"  ✗ {r.name}: {str(r.error or '失败')[:60]}")
+        elif r.name in ("file", "write") and r.success:  # 显示文件写入成功
+            key_results.append(f"  ✓ {r.name}: 文件写入成功")
+
+    # 限制显示数量
+    if len(key_results) > 10:
+        key_results = key_results[:10] + [f"  ... 还有 {len(key_results) - 10} 个步骤"]
+
+    lines = [
+        "",
+        "---",
+        "",
+        f"**任务总结**: {status}",
+        f"执行了 {rounds} 轮对话，调用 {total} 次工具",
+    ]
+
+    if key_results:
+        lines.append("")
+        lines.append("**关键步骤**:")
+        lines.extend(key_results)
+
+    return "\n".join(lines)
 
 
 class Agent:
@@ -90,6 +150,10 @@ class Agent:
         self.guardrails = ToolGuardrails(self.config.memory.workspace_dir)
         self.classifier = ResultClassifier()
         self.retry_mgr = RetryManager()
+
+        # 安全系统
+        from soul.safety.sandbox import Sandbox
+        self.sandbox = Sandbox(self.config.sandbox if hasattr(self.config, 'sandbox') else None)
 
         # 事件系统
         self._event_handlers: dict[str, list[Any]] = {}
@@ -137,12 +201,14 @@ class Agent:
 
         # 入队并等待处理
         result = await self.lane_queue.enqueue(item)
+        acquired = False
 
-        # 如果不是直接入队，等待队列处理
-        if result not in ("steered",):
+        # 如果不是直接 steer，需要从队列取出并获得执行槽位
+        if result not in ("steered", "steered_and_queued"):
             item = await self.lane_queue.dequeue(session_id)
             if item is None:
                 return "系统繁忙，请稍后重试"
+            acquired = True
 
         try:
             # 更新状态
@@ -151,17 +217,22 @@ class Agent:
             # 获取会话历史
             history = await self.sessions.get_history(session_id)
 
-            # 构建系统提示
-            if not system_prompt:
-                memory_context = await self.memory.query_for_prompt(user_message)
-                system_prompt = self.prompt_builder.build_system_prompt(
-                    tools=tools or self.tools.to_api_schemas(),
-                    extra_context=memory_context,
-                )
+            # 构建系统提示（含技能匹配 + 记忆检索）
+            # 总是构建基础prompt，如果外部提供了额外的prompt则追加
+            memory_context = await self.memory.query_for_prompt(user_message)
+            matched_skills = self.memory.procedural.match(user_message, top_k=2)
+            base_system_prompt = self.prompt_builder.build_system_prompt(
+                matched_skills=matched_skills,
+                tools=tools or self.tools.to_api_schemas(),
+                extra_context=memory_context,
+            )
+            if system_prompt:
+                system_prompt = base_system_prompt + "\n\n" + system_prompt
+            else:
+                system_prompt = base_system_prompt
 
             # 构建消息
             user_msg = Message(role=MessageRole.USER, content=user_message)
-            await self.sessions.add_message(session_id, user_msg)
 
             full_messages = self.prompt_builder.build_messages(
                 history + [user_msg],
@@ -169,44 +240,138 @@ class Agent:
                 tools=tools or self.tools.to_api_schemas(),
             )
 
-            # LLM 推理
-            await self.sessions.update_state(session_id, AgentState.EXECUTING)
-
+            # LLM 推理 + 工具调用循环
+            max_rounds = 50  # 增加到50轮以支持复杂项目构建
+            max_total_tools = 100  # 增加到100次以支持完整项目
+            consecutive_fails = 0
+            actual_rounds = 0
             config = self.config.llm
-            response = await self.llm.chat(
-                full_messages,
-                tools=tools or self.tools.to_api_schemas(),
-                system_prompt=system_prompt,
-                config=config,
-                provider=config.provider,
+            all_tool_results: list[ToolResult] = []
+            final_content = ""
+            current_messages = list(full_messages)
+            saved_len = len(current_messages)
+
+            for round_num in range(max_rounds):
+                # 中循环压缩: 每5轮检查 token 用量，防止工具调用爆窗口
+                if round_num > 0 and round_num % 5 == 0:
+                    if self.compressor.needs_compression(
+                        current_messages, system_tokens=len(system_prompt) // 3
+                    ):
+                        current_messages = self.compressor.compress(
+                            current_messages, system_tokens=len(system_prompt) // 3
+                        )
+                if len(all_tool_results) >= max_total_tools:
+                    final_content += "\n[已达到最大工具调用上限(100次)，任务被迫中止。如需完成请简化任务或分阶段执行]"
+                    break
+                if consecutive_fails >= 5:  # 增加容错次数，允许复杂任务有更多恢复机会
+                    final_content += "\n[连续5次工具执行失败，任务中止。请检查错误原因后重试]"
+                    break
+
+                actual_rounds += 1
+                await self.sessions.update_state(session_id, AgentState.EXECUTING)
+
+                response = await self.llm.chat(
+                    current_messages,
+                    tools=tools or self.tools.to_api_schemas(),
+                    system_prompt=system_prompt,
+                    config=config,
+                    provider=config.provider,
+                )
+
+                if not response.tool_calls:
+                    if response.finish_reason == "length":
+                        final_content += response.content
+                        current_messages.append(Message(
+                            role=MessageRole.ASSISTANT,
+                            content=response.content,
+                            reasoning_content=response.reasoning_content,
+                        ))
+                        current_messages.append(Message(
+                            role=MessageRole.USER, content="请继续。"
+                        ))
+                        continue
+                    if response.finish_reason == "error":
+                        if round_num < max_rounds - 1:
+                            await asyncio.sleep(1.5)
+                            continue
+                    final_content += response.content
+                    break
+
+                final_content += response.content  # 工具轮次的文本也要累积
+
+                # 执行工具调用
+                round_results: list[ToolResult] = []
+                for tc in response.tool_calls:
+                    if len(all_tool_results) >= max_total_tools:
+                        break
+                    tr = await self._execute_tool(tc)
+                    round_results.append(tr)
+                    all_tool_results.append(tr)
+                    if tr.success:
+                        consecutive_fails = 0
+                    else:
+                        consecutive_fails += 1
+
+                # 助手消息（保留 reasoning_content，DeepSeek 思考模式必须传回）
+                assistant_msg = Message(
+                    role=MessageRole.ASSISTANT,
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                    reasoning_content=response.reasoning_content,
+                )
+                current_messages.append(assistant_msg)
+
+                # 工具结果作为独立 TOOL 角色消息追加
+                for tr in round_results:
+                    tool_msg = Message(
+                        role=MessageRole.TOOL,
+                        content=str(tr.result)[:4000] if tr.success else (tr.error or "执行失败"),
+                        metadata={
+                            "tool_call_id": tr.call_id,
+                            "tool_name": tr.name,
+                        },
+                    )
+                    current_messages.append(tool_msg)
+
+                # final_content 已经在上面累积了，不要覆盖
+                # 继续下一轮循环，让LLM看到工具执行结果
+
+            # 循环结束：生成任务执行报告
+            report = _build_task_report(
+                user_message, actual_rounds, all_tool_results,
+                len(all_tool_results) >= max_total_tools,
+                consecutive_fails >= 5,
             )
+            final_content = final_content + "\n\n" + report if final_content else report
 
-            # 处理工具调用
-            tool_results: list[ToolResult] = []
-            for tc in response.tool_calls:
-                tr = await self._execute_tool(tc, session)
-                tool_results.append(tr)
+            # 只保存本轮新产生的消息
+            for msg in current_messages[saved_len:]:
+                await self.sessions.add_message(session_id, msg)
 
-            # 保存助手回复
-            assistant_msg = Message(
-                role=MessageRole.ASSISTANT,
-                content=response.content,
-                tool_calls=response.tool_calls,
-                tool_results=tool_results,
-            )
-            await self.sessions.add_message(session_id, assistant_msg)
+            if not final_content:
+                final_content = "抱歉，任务未能完成。请重试或简化您的请求。"
 
-            # 更新记忆
             await self.memory.observe_action(user_message)
-            await self.memory.store_conversation(session_id, [user_msg, assistant_msg])
+            await self.memory.store_conversation(session_id, current_messages)
+            summary = f"用户: {user_message[:100]} | 回复: {final_content[:100]}"
+            await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
 
-            # 更新状态
+            # 技能自动学习 — 成功任务 → 提取模式 → 生成/进化技能
+            if self.config.skill.auto_generate and consecutive_fails < 5:
+                await self._learn_from_task(user_message, current_messages, all_tool_results)
+
             await self.sessions.update_state(session_id, AgentState.IDLE)
+            return final_content
 
-            return response.content
+        except Exception as e:
+            # 异常时确保返回错误信息而不是空
+            error_msg = f"执行任务时出错: {str(e)}"
+            await self.sessions.update_state(session_id, AgentState.IDLE)
+            return error_msg
 
         finally:
-            self.lane_queue.mark_done(session_id)
+            if acquired:
+                self.lane_queue.mark_done(session_id)
 
     async def chat_stream(
         self,
@@ -230,27 +395,37 @@ class Agent:
         )
 
         result = await self.lane_queue.enqueue(item)
+        acquired = False
 
-        if result not in ("steered",):
+        if result not in ("steered", "steered_and_queued"):
             item = await self.lane_queue.dequeue(session_id)
             if item is None:
                 yield StreamChunk(content="系统繁忙，请稍后重试", finish_reason="error")
                 return
+            acquired = True
+
+        # 标记流式活跃，使 steer 可以注入
+        self.lane_queue.track_active(session_id)
 
         try:
             await self.sessions.update_state(session_id, AgentState.STREAMING)
 
             history = await self.sessions.get_history(session_id)
 
-            if not system_prompt:
-                memory_context = await self.memory.query_for_prompt(user_message)
-                system_prompt = self.prompt_builder.build_system_prompt(
-                    tools=tools or self.tools.to_api_schemas(),
-                    extra_context=memory_context,
-                )
+            # 总是构建基础prompt，如果外部提供了额外的prompt则追加
+            memory_context = await self.memory.query_for_prompt(user_message)
+            matched_skills = self.memory.procedural.match(user_message, top_k=2)
+            base_system_prompt = self.prompt_builder.build_system_prompt(
+                matched_skills=matched_skills,
+                tools=tools or self.tools.to_api_schemas(),
+                extra_context=memory_context,
+            )
+            if system_prompt:
+                system_prompt = base_system_prompt + "\n\n" + system_prompt
+            else:
+                system_prompt = base_system_prompt
 
             user_msg = Message(role=MessageRole.USER, content=user_message)
-            await self.sessions.add_message(session_id, user_msg)
 
             full_messages = self.prompt_builder.build_messages(
                 history + [user_msg],
@@ -260,55 +435,162 @@ class Agent:
 
             config = self.config.llm
             full_content = ""
-            tool_calls: list[ToolCall] = []
 
             # 注册 steer 回调
+            steer_queue: asyncio.Queue[str] = asyncio.Queue()
+
             async def steer_cb(text: str) -> None:
-                """Steer 注入回调。"""
-                pass  # 生产环境实现实际的流注入
+                await steer_queue.put(text)
 
             self.lane_queue.register_steer_callback(session_id, steer_cb)
 
-            async for chunk in self.llm.chat_stream(
-                full_messages,
-                tools=tools or self.tools.to_api_schemas(),
-                system_prompt=system_prompt,
-                config=config,
-                provider=config.provider,
-            ):
-                if chunk.content:
-                    full_content += chunk.content
-                if chunk.tool_call:
-                    tool_calls.append(chunk.tool_call)
-                yield chunk
+            # LLM 推理 + 工具调用循环
+            max_rounds = 50  # 增加到50轮以支持复杂项目构建
+            max_total_tools = 100  # 增加到100次以支持完整项目
+            consecutive_fails = 0
+            actual_rounds = 0
+            current_messages = list(full_messages)
+            saved_len = len(current_messages)
+            all_tool_results: list[ToolResult] = []
 
-            # 处理工具调用
-            tool_results: list[ToolResult] = []
-            for tc in tool_calls:
-                tr = await self._execute_tool(tc, session)
-                tool_results.append(tr)
-                if tr.success:
-                    yield StreamChunk(content=f"\n[工具 {tc.name} 执行完成]\n")
+            for round_num in range(max_rounds):
+                # 中循环压缩: 每5轮检查 token 用量
+                if round_num > 0 and round_num % 5 == 0:
+                    if self.compressor.needs_compression(
+                        current_messages, system_tokens=len(system_prompt) // 3
+                    ):
+                        current_messages = self.compressor.compress(
+                            current_messages, system_tokens=len(system_prompt) // 3
+                        )
+                if len(all_tool_results) >= max_total_tools:
+                    yield StreamChunk(content="\n[已达到最大工具调用上限(100次)，任务被迫中止。如需完成请简化任务或分阶段执行]")
+                    break
+                if consecutive_fails >= 5:  # 增加容错次数，允许复杂任务有更多恢复机会
+                    yield StreamChunk(content="\n[连续5次工具执行失败，任务中止。请检查错误原因后重试]")
+                    break
 
-            # 保存助手回复
-            assistant_msg = Message(
-                role=MessageRole.ASSISTANT,
-                content=full_content,
-                tool_calls=tool_calls,
-                tool_results=tool_results,
+                actual_rounds += 1
+                round_content = ""
+                round_reasoning = ""
+                round_tool_calls: list[ToolCall] = []
+                last_finish = ""
+
+                async for chunk in self.llm.chat_stream(
+                    current_messages,
+                    tools=tools or self.tools.to_api_schemas(),
+                    system_prompt=system_prompt,
+                    config=config,
+                    provider=config.provider,
+                ):
+                    # 排出 steer 队列
+                    while not steer_queue.empty():
+                        try:
+                            steer_text = steer_queue.get_nowait()
+                            yield StreamChunk(content=f"\n[注入: {steer_text}]\n")
+                        except asyncio.QueueEmpty:
+                            break
+                    if chunk.content:
+                        round_content += chunk.content
+                        full_content += chunk.content
+                    if chunk.reasoning_content:
+                        round_reasoning += chunk.reasoning_content
+                    if chunk.tool_call:
+                        round_tool_calls.append(chunk.tool_call)
+                    if chunk.finish_reason:
+                        last_finish = chunk.finish_reason
+                    yield chunk
+
+                # 无工具调用 → 检查是否需要继续
+                if not round_tool_calls:
+                    if last_finish == "length":
+                        current_messages.append(Message(
+                            role=MessageRole.ASSISTANT,
+                            content=round_content,
+                            reasoning_content=round_reasoning,
+                        ))
+                        current_messages.append(Message(
+                            role=MessageRole.USER, content="请继续完成未完成的任务。"
+                        ))
+                        continue
+                    if last_finish == "error" and round_num < max_rounds - 1:
+                        continue
+                    break
+
+                # 执行工具调用
+                round_results: list[ToolResult] = []
+                for tc in round_tool_calls:
+                    if len(all_tool_results) >= max_total_tools:
+                        break
+                    tr = await self._execute_tool(tc)
+                    round_results.append(tr)
+                    all_tool_results.append(tr)
+                    if tr.success:
+                        consecutive_fails = 0
+                    else:
+                        consecutive_fails += 1
+                    yield StreamChunk(tool_result=tr)
+
+                # 助手消息（保留 reasoning_content）
+                assistant_msg = Message(
+                    role=MessageRole.ASSISTANT,
+                    content=round_content,
+                    tool_calls=round_tool_calls,
+                    reasoning_content=round_reasoning,
+                )
+                current_messages.append(assistant_msg)
+
+                # 工具结果作为独立 TOOL 消息
+                for tr in round_results:
+                    tool_msg = Message(
+                        role=MessageRole.TOOL,
+                        content=str(tr.result)[:4000] if tr.success else (tr.error or "失败"),
+                        metadata={
+                            "tool_call_id": tr.call_id,
+                            "tool_name": tr.name,
+                        },
+                    )
+                    current_messages.append(tool_msg)
+
+            # 生成任务执行报告
+            report = _build_task_report(
+                user_message, actual_rounds, all_tool_results,
+                len(all_tool_results) >= max_total_tools,
+                consecutive_fails >= 5,
             )
-            await self.sessions.add_message(session_id, assistant_msg)
+            report_chunk = "\n\n" + report
+            yield StreamChunk(content=report_chunk)
+            full_content = full_content + report_chunk if full_content else report
+
+            # 只保存本轮新产生的消息
+            for msg in current_messages[saved_len:]:
+                await self.sessions.add_message(session_id, msg)
+
+            if not full_content:
+                full_content = "抱歉，任务未能完成。请重试或简化您的请求。"
+                yield StreamChunk(content=full_content)
 
             await self.memory.observe_action(user_message)
-            await self.memory.store_conversation(session_id, [user_msg, assistant_msg])
+            await self.memory.store_conversation(session_id, current_messages)
+            summary = f"用户: {user_message[:100]} | 回复: {full_content[:100]}"
+            await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
+
+            # 技能自动学习
+            if self.config.skill.auto_generate and consecutive_fails < 5:
+                await self._learn_from_task(user_message, current_messages, all_tool_results)
 
             await self.sessions.update_state(session_id, AgentState.IDLE)
 
+        except Exception as e:
+            # 流式异常时发送错误标记
+            yield StreamChunk(content=f"\n[执行出错: {str(e)}]", finish_reason="error")
+
         finally:
-            self.lane_queue.mark_done(session_id)
+            self.lane_queue.untrack_active(session_id)
+            if acquired:
+                self.lane_queue.mark_done(session_id)
 
     async def _execute_tool(
-        self, tool_call: ToolCall, session: SessionState
+        self, tool_call: ToolCall
     ) -> ToolResult:
         """执行工具调用（带安全检查）。"""
         tool_def = self.tools.get(tool_call.name)
@@ -334,18 +616,42 @@ class Agent:
                 classification="denied",
             )
 
-        # 高风险操作需确认
+        # 高风险操作需确认（交互模式中应提示用户）
         if tool_def.requires_approval:
-            # 在交互模式中应提示用户
-            pass
+            return ToolResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                success=False,
+                error="此操作需要用户确认（当前不支持自动审批）",
+                classification="denied",
+            )
 
-        # 执行
+        # 执行（带异常保护 + 沙箱隔离 bash/exec 类工具）
         start = time.time()
-        result, error, retries = await self.retry_mgr.execute_with_retry(
-            tool_def.handler,
-            **tool_call.arguments,
-            tool_name=tool_call.name,
-        )
+        try:
+            # bash/shell/exec 工具用沙箱隔离执行
+            if tool_call.name in ("bash", "shell", "exec", "run"):
+                command = tool_call.arguments.get("command", "")
+                timeout = tool_def.timeout_seconds
+                sandbox_result = await self.sandbox.execute(
+                    command=command,
+                    mode="local",
+                    timeout=timeout,
+                )
+                result = sandbox_result.get("stdout", "")
+                error = sandbox_result.get("stderr", "")
+                retries = 0
+            else:
+                result, error, retries = await self.retry_mgr.execute_with_retry(
+                    tool_def.handler,
+                    **tool_call.arguments,
+                    tool_name=tool_call.name,
+                )
+        except Exception as e:
+            result = None
+            error = str(e)
+            retries = 0
+
         elapsed = (time.time() - start) * 1000
 
         tool_def.call_count += 1
@@ -358,6 +664,7 @@ class Agent:
             error=error,
             duration_ms=elapsed,
             timeout_seconds=tool_def.timeout_seconds,
+            call_id=tool_call.id,
         )
 
     def _register_builtin_tools(self) -> None:
@@ -365,6 +672,8 @@ class Agent:
         self.tools.register(BashTool.to_tool_def())
         self.tools.register(FileTool.to_tool_def())
         self.tools.register(WebTool.to_tool_def())
+        self.tools.register(BrowserTool.to_tool_def())
+        self.tools.register(WindowsTool.to_tool_def())
 
     # ═══════════════════════════════════════════
     # 事件系统
@@ -383,6 +692,74 @@ class Agent:
             else:
                 handler(event)
 
+    async def _learn_from_task(
+        self,
+        task: str,
+        messages: list[Message],
+        tool_results: list[ToolResult],
+    ) -> None:
+        """从成功任务中自动学习 — 连接 SkillGenerator + GEPA 进化管道。
+
+        当 auto_generate=True 时，成功任务结束后自动:
+        1. 构建执行追踪 (execution trace)
+        2. 调用 ProceduralMemory.create_from_trace() 生成/更新技能
+        3. 若 gepa_enabled=True，加载 GEPAEngine 进化技能
+        """
+        try:
+            # 构建执行追踪
+            trace: list[dict[str, Any]] = []
+            for msg in messages:
+                if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        trace.append({
+                            "action": "tool_call",
+                            "description": f"{tc.name}: {str(tc.arguments)[:200]}",
+                        })
+                elif msg.role == MessageRole.TOOL:
+                    trace.append({
+                        "action": "tool_result",
+                        "description": (msg.content or "")[:200],
+                    })
+                elif msg.role == MessageRole.ASSISTANT and msg.content:
+                    trace.append({
+                        "action": "decision",
+                        "description": msg.content[:200],
+                    })
+
+            if len(trace) < 2:
+                return  # 太短的任务不值得学习
+
+            # Layer 2: 程序性记忆 — 从追踪生成/更新技能
+            skill = await self.memory.learn_skill(
+                task=task,
+                trace=trace,
+                success=all(r.success for r in tool_results) if tool_results else True,
+            )
+            if skill is None:
+                return
+
+            # GEPA 进化 — 优化已生成的技能
+            if self.config.skill.gepa_enabled:
+                try:
+                    from soul.skills.gepa import GEPAEngine
+                    engine = GEPAEngine(
+                        skills_dir=self.config.skill.skills_dir,
+                        max_generations=self.config.skill.gepa_generations,
+                        population_size=self.config.skill.gepa_population,
+                    )
+                    evolved = await engine.evolve(
+                        skill,
+                        evaluator=None,  # 使用默认评估器
+                        task_context=task,
+                    )
+                    if evolved:
+                        skill = evolved
+                except ImportError:
+                    pass  # GEPA 依赖不可用时静默跳过
+
+        except Exception:
+            pass  # 技能学习失败不影响主流程
+
     # ═══════════════════════════════════════════
     # 管理 API
     # ═══════════════════════════════════════════
@@ -395,7 +772,7 @@ class Agent:
                 compressed = self.compressor.compress(session.messages)
                 session.messages = compressed
         else:
-            for state in self._all_sessions():
+            for state in (await self.get_all_sessions()):
                 state.messages = self.compressor.compress(state.messages)
 
     async def get_status(self) -> dict[str, Any]:
@@ -420,13 +797,16 @@ class Agent:
     async def shutdown(self) -> None:
         """关闭 Agent。"""
         self._running = False
-        await self.sessions.close_all()
-        await self.memory.close()
-        await self.llm.close_all()
+        if self._initialized:
+            await self.sessions.close_all()
+            await self.memory.close()
+            await self.llm.close_all()
 
-    def _all_sessions(self) -> list[SessionState]:
+    async def get_all_sessions(self) -> list[SessionState]:
         """获取所有会话状态。"""
-        return list(self.sessions._sessions.values())
+        return [
+            state for state in self.sessions._sessions.values()
+        ]
 
     # ═══════════════════════════════════════════
     # 聊天命令

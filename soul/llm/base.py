@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -20,7 +21,8 @@ class LLMResponse:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"  # stop, length, tool_calls, error
-    usage: dict[str, int] = field(default_factory=dict)  # prompt_tokens, completion_tokens
+    usage: dict[str, Any] = field(default_factory=dict)  # prompt_tokens, completion_tokens (+ nested details)
+    reasoning_content: str = ""  # DeepSeek 思考模式的内部推理，发回 API 时必须原样保留
     duration_ms: float = 0
     model: str = ""
     raw_response: Any = None
@@ -90,25 +92,29 @@ class BaseAdapter(ABC):
         if system_prompt:
             api_messages.append({"role": "system", "content": system_prompt})
         for msg in messages:
+            # TOOL 角色消息直接转换
+            if msg.role.value == "tool":
+                api_messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.metadata.get("tool_call_id", ""),
+                    "content": msg.content,
+                })
+                continue
+
             api_msg: dict[str, Any] = {"role": msg.role.value, "content": msg.content}
             if msg.tool_calls:
                 api_msg["tool_calls"] = [
                     {
                         "id": tc.id,
                         "type": "function",
-                        "function": {"name": tc.name, "arguments": str(tc.arguments)},
+                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
                     }
                     for tc in msg.tool_calls
                 ]
-            if msg.tool_results:
-                # 工具结果作为独立消息追加
-                for tr in msg.tool_results:
-                    api_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tr.call_id,
-                        "content": str(tr.result) if tr.success else tr.error or "",
-                    })
-                continue
+            # DeepSeek 思考模式：reasoning_content 必须原样传回
+            if msg.reasoning_content:
+                api_msg["reasoning_content"] = msg.reasoning_content
+            # tool_results 仅用于内部追踪，不拼到 API 格式（由独立的 TOOL 消息承载）
             api_messages.append(api_msg)
         return api_messages
 

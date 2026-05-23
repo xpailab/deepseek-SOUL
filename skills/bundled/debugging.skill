@@ -1,0 +1,55 @@
+---
+name: debugging
+version: 1.0.0
+description: 复杂调试 — 多线程死锁、内存泄漏、异常追踪、Bisect 定位
+type: bundled
+triggers: 调试, debug, 报错, 崩溃, 死锁, 内存泄漏, 异常, 堆栈, traceback, bisect, gdb, 排查, 定位
+---
+
+# 复杂调试
+
+## 描述
+系统化的调试方法论，覆盖多线程、内存、网络、异步等复杂场景。
+
+## 执行步骤
+
+1. 复现问题 — 获取最小可复现用例
+2. 收集信息 — 完整错误堆栈、日志、系统状态、相关代码
+3. 缩小范围 — Git bisect / 注释法 / 二分定位
+4. 假设验证 — 提出根因假设 → 设计验证实验 → 确认或排除
+5. 边界检查 — 空值、越界、类型错误、竞态条件
+6. 修复验证 — 最小修改 → 单测覆盖 → 回归测试
+7. 根因文档化 — 记录问题原因、修复方案、预防措施
+
+## 场景模板
+
+### 死锁排查
+```bash
+# Python: 打印所有线程堆栈
+python -c "import sys,faulthandler; faulthandler.dump_traceback()"
+# Go: goroutine 堆栈
+curl localhost:6060/debug/pprof/goroutine?debug=2
+```
+
+### 内存泄漏
+```bash
+# Python: objgraph 或 tracemalloc
+python -X tracemalloc -c "import tracemalloc; tracemalloc.start()"
+# Node: heap snapshot
+node --inspect --expose-gc app.js
+```
+
+### 网络问题
+```bash
+# 连接追踪
+strace -e trace=network -p <pid>
+tcpdump -i any port 5432 -w capture.pcap
+```
+
+## 使用的工具
+bash, file, web
+
+## 注意事项
+- 一次只改一个变量，避免引入新的混淆因素
+- 在隔离环境中复现（数据库副本、staging 环境）
+- 记录完整的排查过程，方便团队回顾
