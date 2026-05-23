@@ -14,23 +14,23 @@ DeepSoul is an AI agent that **gets smarter with every interaction** — it cont
 
 ### Daily Development
 ```bash
-soul run "Create a FastAPI project with user login, JWT auth, and DB models"
-soul run "Refactor soul/engine/agent.py into smaller methods"
-soul run "Write a Dockerfile and docker-compose.yml for this project"
-soul run "Find all SQL injection vulnerabilities in this codebase"
+deepsoul run "Create a FastAPI project with user login, JWT auth, and DB models"
+deepsoul run "Refactor soul/engine/agent.py into smaller methods"
+deepsoul run "Write a Dockerfile and docker-compose.yml for this project"
+deepsoul run "Find all SQL injection vulnerabilities in this codebase"
 ```
 
 ### Scheduled Automation
 Describe tasks in natural language, automatically converted to cron jobs:
 ```bash
-soul run "Every morning at 9am, check server logs and send error summary to Telegram"
-soul run "Backup the database to /backup every hour"
+deepsoul run "Every morning at 9am, check server logs and send error summary to Telegram"
+deepsoul run "Backup the database to /backup every hour"
 ```
 
 ### Cross-Platform Message Gateway
 One gateway connects all chat platforms:
 ```bash
-soul gateway --port 18789
+deepsoul gateway --port 18789
 # Supports: QQ / WeChat / DingTalk / Feishu / Telegram / REST API / WebSocket
 # All platforms share the same session state
 ```
@@ -44,7 +44,7 @@ After each task, the agent analyzes its execution:
 
 ### Train Your Own Agent
 ```bash
-soul train tasks.txt --count 1000 --workers 8
+deepsoul train tasks.txt --count 1000 --workers 8
 ```
 
 ---
@@ -74,23 +74,23 @@ pip install -e ".[all]"
 
 ### 2. Configure API Key
 ```bash
-soul config llm.provider deepseek
-soul config llm.api_key sk-your-key-here
-soul config llm.model deepseek-v4-pro
+deepsoul config llm.provider deepseek
+deepsoul config llm.api_key sk-your-key-here
+deepsoul config llm.model deepseek-v4-pro
 # Supports: deepseek / claude / openai
 ```
 
 ### 3. Start Using
 ```bash
-soul chat                        # Interactive chat
-soul run "Create a React project" # Single task execution
-soul status                       # Agent status
-soul doctor                       # System diagnostics
+deepsoul chat                        # Interactive chat
+deepsoul run "Create a React project" # Single task execution
+deepsoul status                       # Agent status
+deepsoul doctor                       # System diagnostics
 ```
 
 ### 4. Launch Gateway (optional)
 ```bash
-soul gateway --port 18789
+deepsoul gateway --port 18789
 # Open http://localhost:18789 for Web UI
 # API docs: http://localhost:18789/docs
 ```
@@ -114,13 +114,13 @@ All tool calls pass 4-layer security: parameter validation → path sandbox → 
 ## How It Gets Smarter
 
 ```
-First time:  soul run "Deploy Django to a server"
+First time:  deepsoul run "Deploy Django to a server"
   → 15 min, 8000 tokens → auto-analyzes execution...
 
-Second time: soul run "Deploy Django to a server"
+Second time: deepsoul run "Deploy Django to a server"
   → matches learned skill, 5 min, 3000 tokens
 
-Tenth time:  soul run "Deploy Django to a server"
+Tenth time:  deepsoul run "Deploy Django to a server"
   → GEPA has optimized 5 generations, 2 min, 800 tokens
   → Agent: "I noticed you always run tests before deploy. Add to automation?"
 ```
@@ -172,18 +172,18 @@ deepseek-SOUL/
 ## CLI Reference
 
 ```bash
-soul chat                  # Interactive chat
-soul chat "Write a script" # Single message (non-interactive)
-soul run "Create project"  # Execute one-shot task
+deepsoul chat                  # Interactive chat
+deepsoul chat "Write a script" # Single message (non-interactive)
+deepsoul run "Create project"  # Execute one-shot task
 
-soul gateway               # Start gateway (port 18789)
-soul config --all          # View all config
-soul config llm.model gpt-4o  # Change single setting
-soul status                # System status
-soul doctor                # Diagnostics (deps, config, API key)
+deepsoul gateway               # Start gateway (port 18789)
+deepsoul config --all          # View all config
+deepsoul config llm.model gpt-4o  # Change single setting
+deepsoul status                # System status
+deepsoul doctor                # Diagnostics (deps, config, API key)
 
-soul train tasks.txt --count 1000 --workers 8  # Generate training data
-soul version               # Version info
+deepsoul train tasks.txt --count 1000 --workers 8  # Generate training data
+deepsoul version               # Version info
 ```
 
 ---

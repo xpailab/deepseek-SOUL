@@ -58,6 +58,8 @@ all = [
 
 [project.scripts]
 soul = "soul.cli:main"
+deepsoul = "soul.cli:main"
+deepsoul-gateway = "soul.gateway.server:main"
 soul-gateway = "soul.gateway.server:main"
 soul-mlops = "soul.mlops.cli:main"
 

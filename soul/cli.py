@@ -1,13 +1,15 @@
 """DeepSoul CLI — 命令行入口。
 
 提供:
-- soul chat: 交互式对话
-- soul run: 单次执行
-- soul gateway: 启动网关
-- soul config: 配置管理
-- soul status: 查看状态
-- soul doctor: 诊断检查
-- soul train: 启动 MLOps 训练
+- deepsoul chat: 交互式对话
+- deepsoul run: 单次执行
+- deepsoul gateway: 启动网关
+- deepsoul config: 配置管理
+- deepsoul status: 查看状态
+- deepsoul doctor: 诊断检查
+- deepsoul train: 启动 MLOps 训练
+
+兼容: soul 命令仍然可用
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from soul.engine.agent import Agent
 from soul.config.manager import ConfigManager
 
 app = typer.Typer(
-    name="soul",
+    name="deepsoul",
     help="DeepSoul — 下一代 AI Agent 框架",
     add_completion=False,
 )
