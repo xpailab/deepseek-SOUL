@@ -232,9 +232,10 @@ class MemoryManager:
         task: str,
         trace: list[dict[str, Any]],
         success: bool = True,
+        tool_results: list[Any] | None = None,
     ) -> Skill | None:
         """从任务执行中学习新技能（Layer 2）。"""
-        return await self.procedural.create_from_trace(task, trace, success)
+        return await self.procedural.create_from_trace(task, trace, success, tool_results)
 
     async def observe_action(
         self,

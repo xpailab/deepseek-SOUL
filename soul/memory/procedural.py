@@ -64,8 +64,9 @@ class ProceduralMemory:
             score += len(overlap) * 0.5
             # 使用频率加权
             score += min(skill.meta.usage_count / 100, 1.0)
-            # 成功率加权
-            score *= skill.meta.success_rate
+            # 成功率加权（新技能至少给最低权重，避免永不匹配）
+            sr = max(skill.meta.success_rate, 0.1)
+            score *= sr
 
             if score > 0:
                 scored.append((score, skill))
@@ -78,18 +79,21 @@ class ProceduralMemory:
         task_description: str,
         execution_trace: list[dict[str, Any]],
         success: bool = True,
+        tool_results: list[Any] | None = None,
     ) -> Skill | None:
         """从执行追踪自动创建技能。
 
         Args:
             task_description: 任务描述
             execution_trace: 执行步骤记录
-            success: 是否成功
+            success: 任务是否完全成功
+            tool_results: 工具执行结果(用于计算部分成功率)
 
         Returns:
             新创建的 Skill，如果失败返回 None
         """
-        if not success or len(execution_trace) < 2:
+        # 至少2个步骤才能学习；即使失败也学（标记为低成功率）
+        if len(execution_trace) < 2:
             return None
 
         # 提取关键步骤
@@ -107,12 +111,23 @@ class ProceduralMemory:
         content = self._generate_skill_content(name, task_description, key_steps)
         triggers = self._extract_triggers(task_description)
 
+        # 计算初始成功率：失败任务也能学，但成功率更低
+        if success:
+            init_success = 1.0
+        elif tool_results:
+            ok = sum(1 for r in tool_results if getattr(r, 'success', False))
+            total = max(len(tool_results), 1)
+            init_success = max(0.1, ok / total)
+        else:
+            init_success = 0.3  # 失败无数据，给最低信任分
+
         meta = SkillMeta(
             name=name,
             version="1.0.0",
             description=f"自动生成的技能：{task_description[:100]}",
             type=SkillType.EVOLVED,
             triggers=triggers,
+            success_rate=init_success,
         )
 
         skill = Skill(meta=meta, content=content)
@@ -141,6 +156,12 @@ class ProceduralMemory:
             skill.updated_at = time.time()
             self._save_skill_file(skill)
         skill.meta.usage_count += 1
+        # 每次成功复用：提升适应度 + 推进 GEPA 代际
+        skill.meta.fitness_score = min(1.0, skill.meta.fitness_score + 0.1)
+        skill.meta.success_rate = min(1.0, skill.meta.success_rate + 0.05)
+        # 每使用3次推进一代，标记可触发 GEPA 进化
+        if skill.meta.usage_count % 3 == 0:
+            skill.meta.gepa_generation += 1
         return skill
 
     def _extract_key_steps(self, trace: list[dict[str, Any]]) -> list[str]:

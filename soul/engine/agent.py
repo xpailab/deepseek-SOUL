@@ -736,6 +736,7 @@ class Agent:
                 task=task,
                 trace=trace,
                 success=all(r.success for r in tool_results) if tool_results else True,
+                tool_results=tool_results,
             )
             if skill is None:
                 return
