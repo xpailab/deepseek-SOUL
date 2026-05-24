@@ -157,6 +157,10 @@ class Agent:
         from soul.safety.auditor import Auditor
         self.auditor = Auditor()
 
+        # 保存启动时的 CWD（asyncio/lane queue 可能改变工作目录）
+        import os as _os
+        self.startup_cwd = _os.getcwd()
+
         # 工作记忆 + 执行计划（会话级推理增强）
         self.working_memory = WorkingMemory()
         self.verifier = ResultVerifier()
@@ -690,8 +694,7 @@ class Agent:
 
     def _recon_prompt(self, task: str) -> str:
         """生成侦察阶段指令——动手前先摸清现状。"""
-        import os
-        cwd = os.getcwd()
+        cwd = getattr(self, 'startup_cwd', '') or __import__('os').getcwd()
         ambiguous = self._is_vague_task(task)
 
         # 检测用户是否在问"当前项目"相关问题（没有指定具体路径）
