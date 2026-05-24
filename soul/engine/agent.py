@@ -907,6 +907,12 @@ class Agent:
                     # 规划指令
                     parts.append(wm.get_planning_prompt(user_message))
 
+        # 逐行修补死循环检测：同一文件 3+ 次编辑仍失败 → 强制全文重写
+        if not first_round:
+            rewrite_file = wm.needs_full_rewrite()
+            if rewrite_file:
+                parts.append(wm.get_rewrite_prompt(rewrite_file))
+
         # 强制编码验证：上轮写了代码就注入检查指令
         if not first_round:
             code_guard = self._coding_guard_from_memory()
