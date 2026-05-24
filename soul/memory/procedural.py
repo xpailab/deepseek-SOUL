@@ -175,11 +175,18 @@ class ProceduralMemory:
         return steps
 
     def _generate_skill_name(self, description: str) -> str:
-        """从描述生成技能名称。"""
-        # 简单方法：取前几个有意义的词，转 snake_case
-        words = description.lower().split()[:5]
-        name = "_".join(w for w in words if len(w) > 2)
-        return name or "unnamed_skill"
+        """从描述生成安全的技能名称（最多 50 字符，无路径分隔符）。"""
+        import re
+        # 移除路径、URL、特殊字符，只保留中英文和数字
+        clean = re.sub(r'[\\/:*?"<>|]', '', description)
+        clean = re.sub(r'\s+', '_', clean.strip())
+        # 取前 50 个字符
+        clean = clean[:50].rstrip('_')
+        # 确保至少有意义的名称
+        if len(clean) < 3:
+            import hashlib
+            clean = "skill_" + hashlib.md5(description.encode()).hexdigest()[:8]
+        return clean
 
     def _generate_skill_content(
         self, name: str, description: str, steps: list[str]
@@ -202,16 +209,28 @@ class ProceduralMemory:
 """
 
     def _extract_triggers(self, text: str) -> list[str]:
-        """从文本中提取触发关键词。"""
-        # 提取技术关键词作为触发词
+        """从任务描述中提取触发关键词（中英文）。"""
+        # 高频技术关键词
         tech_keywords = [
-            "docker", "git", "python", "node", "react", "api", "database",
-            "deploy", "test", "build", "install", "config", "backup",
-            "日志", "部署", "测试", "安装", "配置", "备份", "数据库",
+            # 英文
+            "docker", "git", "python", "node", "react", "vue", "api",
+            "database", "deploy", "test", "build", "install", "config",
+            "backup", "html", "css", "javascript", "markdown", "frontend",
+            "web", "editor", "preview", "file", "write", "read", "server",
+            # 中文
+            "部署", "测试", "安装", "配置", "备份", "数据库", "日志",
+            "前端", "后端", "编辑器", "预览", "小说", "写作", "章节",
+            "导出", "导入", "优化", "重构", "修复", "创建", "文件",
+            "代码", "项目", "工具", "管理", "主题", "样式", "暗色",
         ]
         text_lower = text.lower()
-        triggers = [k for k in tech_keywords if k in text_lower]
-        return triggers[:5]  # 限制触发词数量
+        found = []
+        for k in tech_keywords:
+            if k in text_lower:
+                found.append(k)
+                if len(found) >= 8:  # 最多 8 个触发词
+                    break
+        return found
 
     def _parse_skill_file(self, filepath: Path) -> Skill | None:
         """解析技能文件。"""
