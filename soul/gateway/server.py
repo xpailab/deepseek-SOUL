@@ -259,7 +259,7 @@ class Gateway:
                                     async for chunk in self.agent.chat_stream(txt, session_id=sid):
                                         d = {}
                                         if chunk.content: d["c"] = chunk.content
-                                        if chunk.tool_call: d["t"] = chunk.tool_call.name
+                                        if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
                                         if chunk.tool_result:
                                             d["r"] = {"ok": chunk.tool_result.success,
                                                        "text": _fmt_tool_result(chunk.tool_result)}
@@ -313,7 +313,7 @@ class Gateway:
                                                 if chunk.content:
                                                     d["c"] = chunk.content
                                                     stage_content += chunk.content
-                                                if chunk.tool_call: d["t"] = chunk.tool_call.name
+                                                if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
                                                 if chunk.tool_result:
                                                     d["r"] = {"ok": chunk.tool_result.success,
                                                                "text": _fmt_tool_result(chunk.tool_result)}
@@ -362,7 +362,7 @@ class Gateway:
                                         async for chunk in self.agent.chat_stream(txt, session_id=sid):
                                             d = {}
                                             if chunk.content: d["c"] = chunk.content
-                                            if chunk.tool_call: d["t"] = chunk.tool_call.name
+                                            if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
                                             if chunk.tool_result:
                                                 d["r"] = {"ok": chunk.tool_result.success,
                                                            "text": _fmt_tool_result(chunk.tool_result)}
@@ -612,27 +612,28 @@ CHAT_PAGE = """<!DOCTYPE html>
       var d = document.createElement('div'); d.textContent = text; return d.innerHTML;
     }
     if (!window._markedInit) {
-      marked.setOptions({gfm:true, breaks:false});
+      try{
+        if(typeof marked.setOptions==='function') marked.setOptions({gfm:true,breaks:false});
+        else if(typeof marked.use==='function') marked.use({gfm:true,breaks:false});
+      }catch(e){}
       window._markedInit = true;
     }
-    var clean = text;
-    // 1. 修复 CJK 字符间多余空格
-    clean = clean.replace(/([\u4e00-\u9fff\u3400-\u4dbf])\\s+([\u4e00-\u9fff\u3400-\u4dbf])/g, '$1$2');
-    // 2. 保护双下划线变量名 (如 __init__, __name__) 不被 marked 吃掉
-    clean = clean.replace(/__([a-zA-Z0-9]+)__/g, '\\\\_\\\\_$1\\\\_\\\\_');
-    // 3. 保护单词内的下划线 (如 py_project, file_name.py)
-    clean = clean.replace(/([a-zA-Z0-9])_([a-zA-Z0-9])/g, '$1\\\\_$2');
-    // 4. 保护 CJK 字符前后可能被误解析的下划线
-    clean = clean.replace(/([\u4e00-\u9fff])_(\\w)/g, '$1\\\\_$2');
-    clean = clean.replace(/(\\w)_([\u4e00-\u9fff])/g, '$1\\\\_$2');
-    return marked.parse(clean);
+    var clean = text
+      // 保�?�双下划线变量名 (__init__, __name__) → code 标签
+      .replace(/__([a-zA-Z0-9_]+)__/g, '<code>$1</code>')
+      // 保�?�文件�?径/模块名中的下划线不被解�?为斜体
+      .replace(/([a-zA-Z0-9\/\])_([a-zA-Z0-9])/g, '$1&#95;$2');
+    if(typeof marked.parse==='function') return marked.parse(clean);
+    else return marked(clean);
   }
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let ws = null, sessionId = '', wsReady = false, reconnectTimer = null;
   let agentCards = {}, agentsRow = null;
 
-  function toast(t) {
+  
+  function escHtml(s) { var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function toast(t) {
     const el = document.createElement('div');
     el.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#ef4444;color:#fff;padding:8px 18px;border-radius:8px;font-size:.82rem;z-index:999';
     el.textContent = t; document.body.appendChild(el);
@@ -670,7 +671,7 @@ CHAT_PAGE = """<!DOCTYPE html>
           simpleMsg.innerHTML = '<div class=\"msg-body\"><div class=\"msg-text\"></div></div>';
           document.getElementById('msgList').appendChild(simpleMsg);
         }
-        simpleMsg.querySelector('.msg-text').innerHTML = renderMD(simpleMsg.querySelector('.msg-text').textContent + d.c);
+        var cur = simpleMsg.querySelector('.msg-text').getAttribute('data-raw') || ''; cur += d.c; simpleMsg.querySelector('.msg-text').setAttribute('data-raw', cur); simpleMsg.querySelector('.msg-text').innerHTML = renderMD(cur);
         scrollDown();
       }
       if(d.t){
@@ -680,15 +681,20 @@ CHAT_PAGE = """<!DOCTYPE html>
           simpleMsg.innerHTML = '<div class=\"msg-body\"><div class=\"msg-text\"></div></div>';
           document.getElementById('msgList').appendChild(simpleMsg);
         }
-        const tl = document.createElement('div');
-        tl.style.cssText = 'font-size:.7rem;color:var(--text-dim);margin:2px 0';
-        tl.textContent = '...' + d.t; simpleMsg.querySelector('.msg-body').appendChild(tl);
+        var tl = document.createElement('div');
+        tl.style.cssText = 'font-size:.75rem;margin:3px 0;padding:5px 10px;background:#f3f4f6;border-radius:5px;border-left:3px solid var(--accent)';
+        var argsStr = d.args ? (typeof d.args==='string'?d.args.slice(0,150):JSON.stringify(d.args||{}).slice(0,150)) : '';
+        tl.innerHTML = '<span style=\"color:var(--accent);font-weight:600\">&#9881; ' + (d.t||'tool') + '</span>' + (argsStr?' <span style=\"color:var(--text-dim);font-size:.68rem;font-family:monospace\">' + escHtml(argsStr) + '</span>':'');
+        simpleMsg.querySelector('.msg-body').appendChild(tl);
         scrollDown();
       }
       if(d.r){
-        const rl = document.createElement('div');
-        rl.style.cssText = 'font-size:.68rem;margin:1px 0;color:' + (d.r.ok?'var(--success)':'var(--danger)');
-        rl.textContent = (d.r.ok?'OK ':'FAIL ') + ': ' + (d.r.text||'').slice(0,80);
+        var rl = document.createElement('div');
+        var ok = d.r.ok;
+        var txt = (d.r.text||'').slice(0,400);
+        if((d.r.text||'').length > 400) txt += '...';
+        rl.style.cssText = 'font-size:.72rem;margin:1px 0 3px 8px;padding:4px 10px;border-radius:4px;color:' + (ok?'var(--success)':'var(--danger)') + ';background:' + (ok?'#f0fdf4':'#fef2f2') + ';white-space:pre-wrap;word-break:break-all';
+        rl.textContent = (ok?'✓ ':'✗ ') + txt;
         if(simpleMsg) simpleMsg.querySelector('.msg-body').appendChild(rl);
         scrollDown();
       }
