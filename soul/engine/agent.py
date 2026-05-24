@@ -678,6 +678,71 @@ class Agent:
         except Exception:
             pass  # 检查点保存失败不应影响主流程
 
+    @staticmethod
+    def _is_vague_task(text: str) -> bool:
+        """检测任务是否过于模糊——需要反问澄清。"""
+        t = text.strip()
+        vague_patterns = ["优化", "改一下", "修一下", "有问题", "不行", "报错", "慢了", "帮我看看"]
+        has_specific = any(
+            kw in t.lower() for kw in [".py", ".js", ".go", ".ts", "/", "\\", "error",
+                "traceback", "log", "日志", "文件", "目录", "端口", "bug", "异常"]
+        )
+        is_vague = any(p in t for p in vague_patterns)
+        # 短 + 无具体信息 + 包含模糊词 → 需要反问
+        if len(t) < 25 and not has_specific and is_vague:
+            return True
+        # 有模糊词但无具体信息 → 需要反问
+        return is_vague and not has_specific
+
+    def _recon_prompt(self, task: str) -> str:
+        """生成侦察阶段指令——动手前先摸清现状。"""
+        ambiguous = self._is_vague_task(task)
+        lines = ["\n## 当前阶段: 侦察与理解"]
+
+        if ambiguous:
+            lines.append("⚠️ 用户的任务描述比较模糊，请先反问 1-2 个具体问题确认需求。")
+            lines.append("同时用只读工具快速了解相关现状（项目结构、最近改动、相关文件）。")
+            lines.append("如果信息足够推断用户意图，可以直接给出答案或开始执行。")
+        else:
+            lines.append("在制定计划之前，先用 1-2 个只读工具快速摸底：")
+            lines.append("1. 读相关文件（了解现有代码/配置）")
+            lines.append("2. 查项目结构（确认文件位置和依赖）")
+            lines.append("3. 查 git 状态（了解最近的改动）")
+            lines.append("侦察后简要总结发现，然后制定执行计划并开始执行。")
+            lines.append("不要花超过 1 轮做侦察——够用就立刻动手。")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_verify_prompt(tool_name: str, filepath: str = "") -> str:
+        """为代码修改生成编译/运行验证提示。"""
+        code_extensions = {
+            ".py": "python -m py_compile <file> 或 python <file>",
+            ".js": "node --check <file>",
+            ".ts": "npx tsc --noEmit <file>",
+            ".go": "go build ./...",
+            ".rs": "cargo check",
+            ".java": "javac <file> 或 mvn compile",
+            ".c": "gcc -Wall -o /dev/null <file>",
+            ".cpp": "g++ -Wall -o /dev/null <file>",
+            ".sh": "bash -n <file>",
+        }
+
+        if not filepath:
+            return ""
+
+        ext = filepath[filepath.rfind("."):].lower() if "." in filepath else ""
+        check_cmd = code_extensions.get(ext, "")
+        if not check_cmd:
+            return ""
+
+        check_cmd = check_cmd.replace("<file>", filepath)
+        return (
+            f"\n[编译验证] 刚修改了代码文件 {filepath}，请运行编译/语法检查:\n"
+            f"  {check_cmd}\n"
+            f"  如果检查失败，立即修复错误后再继续。"
+        )
+
     # ═══════════════════════════════════════════
     # 问题解决增强：计划 + 工作记忆 + 自纠错 + 验证
     # ═══════════════════════════════════════════
@@ -694,15 +759,13 @@ class Agent:
         if wm_text:
             parts.append(wm_text)
 
-        # 首轮：注入检查点续跑或规划指令
+        # 首轮：侦察指令 + 检查点续跑或规划
         if first_round:
             if wm.execution_plan.is_empty():
-                # 检查是否有未完成的检查点可续跑
                 cp = self.checkpoint_mgr.load_latest()
                 if cp:
                     resume_context = self.checkpoint_mgr.get_resume_context(cp)
                     parts.append(resume_context)
-                    # 恢复工作记忆状态
                     wm.execution_plan = ExecutionPlan(task=cp.task)
                     for s in cp.plan_steps:
                         from soul.engine.working_memory import PlanStep
@@ -719,6 +782,9 @@ class Agent:
                     for r in cp.ruled_out:
                         wm.rule_out(r)
                 else:
+                    # 侦察阶段指令：动手前先看清楚
+                    parts.append(self._recon_prompt(user_message))
+                    # 规划指令
                     parts.append(wm.get_planning_prompt(user_message))
 
         # 错误知识库建议（当最近有失败时）
@@ -811,6 +877,18 @@ class Agent:
                 # 验证失败但工具报告成功 → 修正 success 标记
                 if not vr.passed and tr.success and vr.severity == "error":
                     wm.add_finding(f"{tr.name} 虽然返回成功但验证发现问题: {'; '.join(vr.issues[:2])}")
+
+                # 编译/运行验证：修改代码文件后自动建议检查
+                if tr.success and tr.name in ("write_file", "write", "edit_file", "edit", "file"):
+                    filepath = ""
+                    if hasattr(tr, 'result') and isinstance(tr.result, dict):
+                        filepath = tr.result.get("path", tr.result.get("file_path", ""))
+                    if not filepath and hasattr(tr, 'arguments') and isinstance(tr.arguments, dict):
+                        pass  # tr.arguments not directly accessible from ToolResult
+                    if filepath:
+                        verify_prompt = self._build_verify_prompt(tr.name, filepath)
+                        if verify_prompt:
+                            wm.add_finding(verify_prompt.strip())
 
         # 标记计划步骤完成
         plan = wm.execution_plan
