@@ -117,14 +117,19 @@ class ToolGuardrails:
         elif tool_name in ("delete", "delete_file", "rm"):
             return self._check_delete_path(arguments.get("file_path", ""))
         elif tool_name == "file":
-            # 通用 file 工具：根据 operation 参数决定检查类型
+            # 通用 file 工具：根据 action 参数决定检查类型
             op = arguments.get("operation", "") or arguments.get("action", "")
+            fp = arguments.get("file_path", "")
             if op in ("read", "read_file", "cat", "head", "tail"):
-                return self._check_read_path(arguments.get("file_path", ""))
+                return self._check_read_path(fp)
+            elif op in ("list", "exists"):
+                return True, "OK"  # 只读操作，始终允许
             elif op in ("delete", "remove", "rm"):
-                return self._check_delete_path(arguments.get("file_path", ""))
+                return self._check_delete_path(fp)
+            elif op == "mkdir":
+                return self._check_file_path(fp)  # 创建目录，检查路径
             else:
-                return self._check_file_path(arguments.get("file_path", ""))
+                return self._check_file_path(fp)
 
         return True, "OK"
 
