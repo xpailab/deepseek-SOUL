@@ -139,8 +139,12 @@ async def _interactive_loop(agent: Agent, session_id: str = ""):
                     console.print(chunk.content, end="")
                     full_response += chunk.content
                 if chunk.tool_call:
+                    tc = chunk.tool_call
+                    args_str = str(tc.arguments)
+                    if len(args_str) > 80:
+                        args_str = args_str[:80] + "..."
                     console.print(
-                        f"\n[dim]🔧 调用工具: {chunk.tool_call.name}[/dim]",
+                        f"\n[dim]🔧 {tc.name}({args_str})[/dim]",
                         end="",
                     )
         except Exception as e:

@@ -690,8 +690,10 @@ class Agent:
 
     def _recon_prompt(self, task: str) -> str:
         """生成侦察阶段指令——动手前先摸清现状。"""
+        import os
+        cwd = os.getcwd()
         ambiguous = self._is_vague_task(task)
-        lines = ["\n## 当前阶段: 侦察与理解"]
+        lines = [f"\n## 当前工作目录: {cwd}", "\n## 当前阶段: 侦察与理解"]
 
         if ambiguous:
             lines.append("⚠️ 用户的任务描述比较模糊，请先反问 1-2 个具体问题确认需求。")
