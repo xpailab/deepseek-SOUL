@@ -22,9 +22,11 @@ from typing import Optional
 import typer
 
 # 修复 Windows GBK 终端下 rich 的 Unicode 编码崩溃
+# stdin 也要修复——管道输入中文在 GBK 下会损坏为 surrogate 字符
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 from rich.console import Console
 from rich.live import Live
