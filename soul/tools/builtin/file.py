@@ -55,15 +55,22 @@ class FileTool:
 
     async def execute(
         self,
-        action: str,
-        file_path: str,
+        action: str = "",
+        file_path: str = "",
         content: str = "",
         old_string: str = "",
         new_string: str = "",
         offset: int = 0,
         limit: int = 2000,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """执行文件操作。"""
+        # 容错：LLM 可能用 path 代替 file_path
+        if not file_path and kwargs.get("path"):
+            file_path = kwargs["path"]
+        # 容错：LLM 可能用 operation 代替 action
+        if not action and kwargs.get("operation"):
+            action = kwargs["operation"]
         path = self._resolve_path(file_path)
 
         try:
