@@ -205,7 +205,7 @@ class ResultVerifier:
             else:
                 vr.passed = False
                 vr.issues.append(f"文件未成功创建: {filepath}")
-                vr.suggestions.append(f"检查路径权限，确保目录存在")
+                vr.suggestions.append("检查路径权限，确保目录存在")
                 vr.severity = "error"
 
         # 检查 result 中是否有错误描述

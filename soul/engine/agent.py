@@ -18,29 +18,24 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from soul.config.manager import ConfigManager
+from soul.engine.checkpoint import CheckpointManager
 from soul.engine.lane_queue import LaneQueue, QueueItem
 from soul.engine.session import SessionManager
-from soul.engine.task_stages import (
-    TaskStagePlanner,
-    TaskPlan,
-    build_stage_prompt,
-    parse_stage_completion,
-)
-from soul.engine.checkpoint import CheckpointManager, Checkpoint
 from soul.engine.verifier import ResultVerifier
-from soul.engine.working_memory import WorkingMemory, ExecutionPlan
+from soul.engine.working_memory import ExecutionPlan, WorkingMemory
 from soul.llm.registry import AdapterRegistry
 from soul.memory.error_kb import ErrorKnowledgeBase
 from soul.memory.manager import MemoryManager
 from soul.prompt.builder import PromptBuilder
 from soul.prompt.compressor import ContextCompressor
 from soul.tools.builtin.bash import BashTool
+from soul.tools.builtin.browser import BrowserTool
 from soul.tools.builtin.file import FileTool
 from soul.tools.builtin.web import WebTool
-from soul.tools.builtin.browser import BrowserTool
 from soul.tools.builtin.windows import WindowsTool
 from soul.tools.classifier import ResultClassifier
 from soul.tools.guardrails import ToolGuardrails
@@ -49,7 +44,6 @@ from soul.tools.retry import RetryManager
 from soul.types import (
     AgentEvent,
     AgentState,
-    LLMConfig,
     MemoryLayer,
     Message,
     MessageRole,
@@ -1121,7 +1115,6 @@ class Agent:
         except Exception as e:
             result = None
             error = str(e)
-            retries = 0
 
         elapsed = (time.time() - start) * 1000
 
