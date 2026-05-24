@@ -177,11 +177,13 @@ class ProceduralMemory:
     def _generate_skill_name(self, description: str) -> str:
         """从描述生成安全的技能名称（最多 50 字符，无路径分隔符）。"""
         import re
-        # 移除路径、URL、特殊字符，只保留中英文和数字
-        clean = re.sub(r'[\\/:*?"<>|]', '', description)
+        # 移除路径、URL、特殊字符（含中文全角标点），只保留中英文和数字
+        clean = re.sub(r'[\\/:*?"<>|：；（）【】！，。？、￥…—]', '', description)
         clean = re.sub(r'\s+', '_', clean.strip())
+        # 压缩连续下划线
+        clean = re.sub(r'_+', '_', clean)
         # 取前 50 个字符
-        clean = clean[:50].rstrip('_')
+        clean = clean[:50].strip('_')
         # 确保至少有意义的名称
         if len(clean) < 3:
             import hashlib
