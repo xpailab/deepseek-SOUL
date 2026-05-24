@@ -618,11 +618,8 @@ CHAT_PAGE = """<!DOCTYPE html>
       }catch(e){}
       window._markedInit = true;
     }
-    var clean = text
-      // 保�?�双下划线变量名 (__init__, __name__) → code 标签
-      .replace(/__([a-zA-Z0-9_]+)__/g, '<code>$1</code>')
-      // 保�?�文件�?径/模块名中的下划线不被解�?为斜体
-      .replace(/([a-zA-Z0-9\/\])_([a-zA-Z0-9])/g, '$1&#95;$2');
+    // 仅保护 __dunder__ 变量名不被 marked 吃掉——marked 不会将词内下划线 (file_name, deepseek-SOUL) 当作斜体
+    var clean = text.replace(/__([a-zA-Z0-9_]+)__/g, '<code>$1</code>');
     if(typeof marked.parse==='function') return marked.parse(clean);
     else return marked(clean);
   }
