@@ -96,9 +96,14 @@ class ToolGuardrails:
         """
         # 检查参数注入
         args_str = str(arguments).lower()
+        is_write = tool_name in ("write", "write_file", "edit", "edit_file", "file")
         for pattern in self._injection_re:
             if pattern.search(args_str):
-                return False, f"检测到 prompt injection: {pattern.pattern}"
+                p = pattern.pattern
+                # ChatML 格式标记在代码文件中是合法的（数据加载脚本、训练数据等）
+                if is_write and ("im_start" in p or "im_end" in p):
+                    continue
+                return False, f"检测到 prompt injection: {p}"
 
         # 按工具名检查
         if tool_name in ("bash", "shell", "exec", "run"):
