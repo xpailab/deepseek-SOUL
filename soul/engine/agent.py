@@ -29,6 +29,7 @@ from soul.engine.task_stages import (
     build_stage_prompt,
     parse_stage_completion,
 )
+from soul.engine.working_memory import WorkingMemory, ExecutionPlan
 from soul.llm.registry import AdapterRegistry
 from soul.memory.manager import MemoryManager
 from soul.prompt.builder import PromptBuilder
@@ -159,6 +160,9 @@ class Agent:
         from soul.safety.auditor import Auditor
         self.auditor = Auditor()
 
+        # 工作记忆 + 执行计划（会话级推理增强）
+        self.working_memory = WorkingMemory()
+
         # 事件系统
         self._event_handlers: dict[str, list[Any]] = {}
         self._initialized = False
@@ -222,7 +226,6 @@ class Agent:
             history = await self.sessions.get_history(session_id)
 
             # 构建系统提示（含技能匹配 + 记忆检索）
-            # 总是构建基础prompt，如果外部提供了额外的prompt则追加
             memory_context = await self.memory.query_for_prompt(user_message)
             matched_skills = self.memory.procedural.match(user_message, top_k=2)
             base_system_prompt = self.prompt_builder.build_system_prompt(
@@ -231,22 +234,26 @@ class Agent:
                 extra_context=memory_context,
             )
             if system_prompt:
-                system_prompt = base_system_prompt + "\n\n" + system_prompt
-            else:
-                system_prompt = base_system_prompt
+                base_system_prompt = base_system_prompt + "\n\n" + system_prompt
+
+            # 工作记忆增强 + 执行规划注入
+            enhanced_prompt = self._build_enhanced_prompt(
+                base_system_prompt, user_message, first_round=True
+            )
+            self.working_memory.clear()
 
             # 构建消息
             user_msg = Message(role=MessageRole.USER, content=user_message)
 
             full_messages = self.prompt_builder.build_messages(
                 history + [user_msg],
-                system_prompt=system_prompt,
+                system_prompt=enhanced_prompt,
                 tools=tools or self.tools.to_api_schemas(),
             )
 
             # LLM 推理 + 工具调用循环
-            max_rounds = 50  # 增加到50轮以支持复杂项目构建
-            max_total_tools = 100  # 增加到100次以支持完整项目
+            max_rounds = 50
+            max_total_tools = 100
             consecutive_fails = 0
             actual_rounds = 0
             config = self.config.llm
@@ -274,10 +281,15 @@ class Agent:
                 actual_rounds += 1
                 await self.sessions.update_state(session_id, AgentState.EXECUTING)
 
+                # 每轮注入最新工作记忆
+                live_prompt = self._build_enhanced_prompt(
+                    base_system_prompt, user_message, first_round=False
+                )
+
                 response = await self.llm.chat(
                     current_messages,
                     tools=tools or self.tools.to_api_schemas(),
-                    system_prompt=system_prompt,
+                    system_prompt=live_prompt,
                     config=config,
                     provider=config.provider,
                 )
@@ -315,6 +327,11 @@ class Agent:
                         consecutive_fails = 0
                     else:
                         consecutive_fails += 1
+
+                # 更新工作记忆（记录尝试、错误、计划进度）
+                self._update_working_memory(
+                    response.content, round_results, user_message
+                )
 
                 # 助手消息（保留 reasoning_content，DeepSeek 思考模式必须传回）
                 assistant_msg = Message(
@@ -416,7 +433,7 @@ class Agent:
 
             history = await self.sessions.get_history(session_id)
 
-            # 总是构建基础prompt，如果外部提供了额外的prompt则追加
+            # 构建基础prompt，工作记忆增强
             memory_context = await self.memory.query_for_prompt(user_message)
             matched_skills = self.memory.procedural.match(user_message, top_k=2)
             base_system_prompt = self.prompt_builder.build_system_prompt(
@@ -425,15 +442,18 @@ class Agent:
                 extra_context=memory_context,
             )
             if system_prompt:
-                system_prompt = base_system_prompt + "\n\n" + system_prompt
-            else:
-                system_prompt = base_system_prompt
+                base_system_prompt = base_system_prompt + "\n\n" + system_prompt
+
+            enhanced_prompt = self._build_enhanced_prompt(
+                base_system_prompt, user_message, first_round=True
+            )
+            self.working_memory.clear()
 
             user_msg = Message(role=MessageRole.USER, content=user_message)
 
             full_messages = self.prompt_builder.build_messages(
                 history + [user_msg],
-                system_prompt=system_prompt,
+                system_prompt=enhanced_prompt,
                 tools=tools or self.tools.to_api_schemas(),
             )
 
@@ -449,8 +469,8 @@ class Agent:
             self.lane_queue.register_steer_callback(session_id, steer_cb)
 
             # LLM 推理 + 工具调用循环
-            max_rounds = 50  # 增加到50轮以支持复杂项目构建
-            max_total_tools = 100  # 增加到100次以支持完整项目
+            max_rounds = 50
+            max_total_tools = 100
             consecutive_fails = 0
             actual_rounds = 0
             current_messages = list(full_messages)
@@ -479,10 +499,14 @@ class Agent:
                 round_tool_calls: list[ToolCall] = []
                 last_finish = ""
 
+                live_prompt = self._build_enhanced_prompt(
+                    base_system_prompt, user_message, first_round=False
+                )
+
                 async for chunk in self.llm.chat_stream(
                     current_messages,
                     tools=tools or self.tools.to_api_schemas(),
-                    system_prompt=system_prompt,
+                    system_prompt=live_prompt,
                     config=config,
                     provider=config.provider,
                 ):
@@ -533,6 +557,11 @@ class Agent:
                     else:
                         consecutive_fails += 1
                     yield StreamChunk(tool_result=tr)
+
+                # 更新工作记忆
+                self._update_working_memory(
+                    round_content, round_results, user_message
+                )
 
                 # 助手消息（保留 reasoning_content）
                 assistant_msg = Message(
@@ -592,6 +621,85 @@ class Agent:
             self.lane_queue.untrack_active(session_id)
             if acquired:
                 self.lane_queue.mark_done(session_id)
+
+    # ═══════════════════════════════════════════
+    # 问题解决增强：计划 + 工作记忆 + 自纠错 + 验证
+    # ═══════════════════════════════════════════
+
+    def _build_enhanced_prompt(
+        self, base_prompt: str, user_message: str, first_round: bool
+    ) -> str:
+        """构建增强系统提示——注入工作记忆和执行计划指令。"""
+        wm = self.working_memory
+        parts = [base_prompt]
+
+        # 注入工作记忆上下文
+        wm_text = wm.to_prompt()
+        if wm_text:
+            parts.append(wm_text)
+
+        # 首轮：注入规划指令
+        if first_round and wm.execution_plan.is_empty():
+            parts.append(wm.get_planning_prompt(user_message))
+
+        # 连续失败：注入纠错指令
+        correction = wm.get_correction_prompt()
+        if correction:
+            parts.append(correction)
+
+        return "\n\n".join(parts)
+
+    def _update_working_memory(
+        self,
+        response_content: str,
+        round_results: list,
+        user_message: str,
+    ):
+        """从本轮 LLM 响应和工具结果更新工作记忆。"""
+        wm = self.working_memory
+
+        # 尝试从响应中提取执行计划
+        if wm.execution_plan.is_empty():
+            plan = ExecutionPlan.parse_from_text(response_content, user_message)
+            if not plan.is_empty():
+                wm.set_plan(plan)
+
+        # 记录每步工具执行结果
+        for tr in round_results:
+            if hasattr(tr, 'success'):
+                wm.record_attempt(
+                    action=f"{tr.name}",
+                    tool=tr.name,
+                    result=str(tr.result)[:200] if tr.result else "",
+                    success=tr.success,
+                )
+                if not tr.success and tr.error:
+                    wm.record_error(
+                        tool=tr.name,
+                        error=tr.error,
+                    )
+
+        # 标记计划步骤完成
+        plan = wm.execution_plan
+        if not plan.is_empty():
+            current = plan.current_step()
+            if current and round_results:
+                last_tr = round_results[-1] if round_results else None
+                if last_tr and hasattr(last_tr, 'success'):
+                    current.mark_done(
+                        last_tr.success,
+                        str(last_tr.result)[:200] if last_tr.result else last_tr.error or "",
+                    )
+
+        # 检测连续失败 → 自动标记当前方向为"已排除"
+        if wm.repeated_failures(2):
+            if round_results:
+                failed_names = [
+                    tr.name for tr in round_results
+                    if hasattr(tr, 'success') and not tr.success
+                ]
+                if failed_names:
+                    wm.rule_out(f"{', '.join(failed_names)} 方向")
 
     async def _execute_tool(
         self, tool_call: ToolCall, session_id: str = ""
