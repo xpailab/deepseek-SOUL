@@ -29,9 +29,11 @@ from soul.engine.task_stages import (
     build_stage_prompt,
     parse_stage_completion,
 )
+from soul.engine.checkpoint import CheckpointManager, Checkpoint
 from soul.engine.verifier import ResultVerifier
 from soul.engine.working_memory import WorkingMemory, ExecutionPlan
 from soul.llm.registry import AdapterRegistry
+from soul.memory.error_kb import ErrorKnowledgeBase
 from soul.memory.manager import MemoryManager
 from soul.prompt.builder import PromptBuilder
 from soul.prompt.compressor import ContextCompressor
@@ -165,6 +167,12 @@ class Agent:
         self.working_memory = WorkingMemory()
         self.verifier = ResultVerifier()
 
+        # 错误知识库（跨会话修复方案积累）
+        self.error_kb = ErrorKnowledgeBase()
+
+        # 检查点系统（长任务断点续跑）
+        self.checkpoint_mgr = CheckpointManager()
+
         # 事件系统
         self._event_handlers: dict[str, list[Any]] = {}
         self._initialized = False
@@ -183,6 +191,9 @@ class Agent:
 
         # 3. 初始化会话
         await self.sessions.get_or_create("main")
+
+        # 4. 加载错误知识库
+        self.error_kb.load()
 
         self._initialized = True
         self._running = True
@@ -383,12 +394,22 @@ class Agent:
             if self.config.skill.auto_generate and consecutive_fails < 5:
                 await self._learn_from_task(user_message, current_messages, all_tool_results)
 
+            # 保存检查点：任务成功 → 标记完成；否则保留用于续跑
+            if consecutive_fails < 5:
+                self.checkpoint_mgr.mark_complete(session_id)
+            else:
+                self._save_checkpoint(session_id, user_message)
+
+            # 持久化错误知识库
+            self.error_kb.save()
+
             await self.sessions.update_state(session_id, AgentState.IDLE)
             return final_content
 
         except Exception as e:
-            # 异常时确保返回错误信息而不是空
             error_msg = f"执行任务时出错: {str(e)}"
+            self._save_checkpoint(session_id, user_message)
+            self.error_kb.save()
             await self.sessions.update_state(session_id, AgentState.IDLE)
             return error_msg
 
@@ -613,16 +634,49 @@ class Agent:
             if self.config.skill.auto_generate and consecutive_fails < 5:
                 await self._learn_from_task(user_message, current_messages, all_tool_results)
 
+            if consecutive_fails < 5:
+                self.checkpoint_mgr.mark_complete(session_id)
+            else:
+                self._save_checkpoint(session_id, user_message)
+            self.error_kb.save()
+
             await self.sessions.update_state(session_id, AgentState.IDLE)
 
         except Exception as e:
-            # 流式异常时发送错误标记
             yield StreamChunk(content=f"\n[执行出错: {str(e)}]", finish_reason="error")
+            self._save_checkpoint(session_id, user_message)
+            self.error_kb.save()
 
         finally:
             self.lane_queue.untrack_active(session_id)
             if acquired:
                 self.lane_queue.mark_done(session_id)
+
+    def _save_checkpoint(self, session_id: str, task: str = "") -> None:
+        """保存当前执行状态为检查点（用于断点续跑）。"""
+        try:
+            plan = self.working_memory.execution_plan
+            plan_steps = []
+            for s in plan.steps:
+                plan_steps.append({
+                    "step": s.step,
+                    "action": s.action,
+                    "tool": s.tool,
+                    "expected": s.expected,
+                    "fallback": s.fallback,
+                    "completed": s.completed,
+                    "success": s.success,
+                    "result_summary": s.result_summary,
+                })
+
+            self.checkpoint_mgr.save(
+                session_id=session_id,
+                task=task,
+                plan_steps=plan_steps,
+                working_memory=self.working_memory,
+            )
+        except Exception:
+            pass  # 检查点保存失败不应影响主流程
 
     # ═══════════════════════════════════════════
     # 问题解决增强：计划 + 工作记忆 + 自纠错 + 验证
@@ -631,7 +685,7 @@ class Agent:
     def _build_enhanced_prompt(
         self, base_prompt: str, user_message: str, first_round: bool
     ) -> str:
-        """构建增强系统提示——注入工作记忆和执行计划指令。"""
+        """构建增强系统提示——注入工作记忆、错误知识库、检查点。"""
         wm = self.working_memory
         parts = [base_prompt]
 
@@ -640,9 +694,46 @@ class Agent:
         if wm_text:
             parts.append(wm_text)
 
-        # 首轮：注入规划指令
-        if first_round and wm.execution_plan.is_empty():
-            parts.append(wm.get_planning_prompt(user_message))
+        # 首轮：注入检查点续跑或规划指令
+        if first_round:
+            if wm.execution_plan.is_empty():
+                # 检查是否有未完成的检查点可续跑
+                cp = self.checkpoint_mgr.load_latest()
+                if cp:
+                    resume_context = self.checkpoint_mgr.get_resume_context(cp)
+                    parts.append(resume_context)
+                    # 恢复工作记忆状态
+                    wm.execution_plan = ExecutionPlan(task=cp.task)
+                    for s in cp.plan_steps:
+                        from soul.engine.working_memory import PlanStep
+                        step = PlanStep(
+                            step=s.get("step", 0),
+                            action=s.get("action", ""),
+                            completed=s.get("completed", False),
+                            success=s.get("success"),
+                            result_summary=s.get("result_summary", ""),
+                        )
+                        wm.execution_plan.steps.append(step)
+                    for f in cp.findings:
+                        wm.add_finding(f)
+                    for r in cp.ruled_out:
+                        wm.rule_out(r)
+                else:
+                    parts.append(wm.get_planning_prompt(user_message))
+
+        # 错误知识库建议（当最近有失败时）
+        last_err = wm.last_error()
+        if last_err and not last_err.get("fix"):
+            kb_entry = self.error_kb.lookup_by_confidence(
+                last_err["error"], min_confidence=0.5
+            )
+            if kb_entry:
+                parts.append(
+                    f"\n[知识库建议] 历史记录中相似的错误修复方案:\n"
+                    f"  错误特征: {kb_entry.root_cause[:150]}\n"
+                    f"  已知修复: {kb_entry.fix[:200]}\n"
+                    f"  历史成功率: {kb_entry.confidence:.0%}"
+                )
 
         # 连续失败：注入纠错指令
         correction = wm.get_correction_prompt()
@@ -666,7 +757,7 @@ class Agent:
             if not plan.is_empty():
                 wm.set_plan(plan)
 
-        # 记录每步工具执行结果 + 验证
+        # 记录每步工具执行结果 + 验证 + 错误知识库
         for tr in round_results:
             if hasattr(tr, 'success'):
                 wm.record_attempt(
@@ -676,10 +767,27 @@ class Agent:
                     success=tr.success,
                 )
                 if not tr.success and tr.error:
+                    # 查询错误知识库——是否有已知修复方案
+                    kb_entry = self.error_kb.lookup(tr.error, tool=tr.name)
+                    diagnosis = kb_entry.root_cause if kb_entry else ""
+                    fix = kb_entry.fix if kb_entry else ""
+
                     wm.record_error(
                         tool=tr.name,
                         error=tr.error,
+                        diagnosis=diagnosis,
+                        fix=fix,
                     )
+                elif tr.success:
+                    # 上一步失败、这一步成功 → 知识库学习
+                    last_err = wm.last_error()
+                    if last_err and last_err["tool"] == tr.name:
+                        self.error_kb.learn(
+                            error_text=last_err["error"],
+                            tool=tr.name,
+                            fix=f"成功方案: {str(tr.result)[:200]}",
+                        )
+                        self.error_kb.record_result(last_err["error"], True)
 
                 # 结果验证：即使 success=True，也检查输出质量
                 expected = ""
@@ -956,6 +1064,7 @@ class Agent:
         """关闭 Agent。"""
         self._running = False
         self.auditor.flush()
+        self.error_kb.save()
         if self._initialized:
             await self.sessions.close_all()
             await self.memory.close()
