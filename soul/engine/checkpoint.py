@@ -142,17 +142,20 @@ class CheckpointManager:
         except (json.JSONDecodeError, KeyError):
             return None
 
-    def load_latest(self) -> Checkpoint | None:
-        """加载最近的不完整检查点。"""
-        incomplete = self.list_incomplete()
+    def load_latest(self, max_age_hours: int = 0) -> Checkpoint | None:
+        """加载最近的不完整检查点。max_age_hours=0 表示不限时间。"""
+        incomplete = self.list_incomplete(max_age_hours)
         if not incomplete:
             return None
         return incomplete[0]
 
-    def list_incomplete(self) -> list[Checkpoint]:
-        """列出所有未完成的检查点（按时间倒序）。"""
+    def list_incomplete(self, max_age_hours: int = 0) -> list[Checkpoint]:
+        """列出所有未完成的检查点（按时间倒序）。max_age_hours=0 表示不限时间。"""
+        cutoff = time.time() - max_age_hours * 3600 if max_age_hours > 0 else 0
         results = []
         for f in sorted(self.dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if cutoff > 0 and f.stat().st_mtime < cutoff:
+                continue
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 cp = Checkpoint.from_dict(data)

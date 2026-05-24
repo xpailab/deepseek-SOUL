@@ -884,7 +884,7 @@ class Agent:
         # 首轮：侦察指令 + 检查点续跑或规划
         if first_round:
             if wm.execution_plan.is_empty():
-                cp = self.checkpoint_mgr.load_latest()
+                cp = self.checkpoint_mgr.load_latest(max_age_hours=1)
                 if cp:
                     resume_context = self.checkpoint_mgr.get_resume_context(cp)
                     parts.append(resume_context)
