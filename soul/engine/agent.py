@@ -29,6 +29,7 @@ from soul.engine.task_stages import (
     build_stage_prompt,
     parse_stage_completion,
 )
+from soul.engine.verifier import ResultVerifier
 from soul.engine.working_memory import WorkingMemory, ExecutionPlan
 from soul.llm.registry import AdapterRegistry
 from soul.memory.manager import MemoryManager
@@ -162,6 +163,7 @@ class Agent:
 
         # 工作记忆 + 执行计划（会话级推理增强）
         self.working_memory = WorkingMemory()
+        self.verifier = ResultVerifier()
 
         # 事件系统
         self._event_handlers: dict[str, list[Any]] = {}
@@ -664,7 +666,7 @@ class Agent:
             if not plan.is_empty():
                 wm.set_plan(plan)
 
-        # 记录每步工具执行结果
+        # 记录每步工具执行结果 + 验证
         for tr in round_results:
             if hasattr(tr, 'success'):
                 wm.record_attempt(
@@ -678,6 +680,29 @@ class Agent:
                         tool=tr.name,
                         error=tr.error,
                     )
+
+                # 结果验证：即使 success=True，也检查输出质量
+                expected = ""
+                plan = wm.execution_plan
+                if not plan.is_empty() and plan.current_step():
+                    expected = plan.current_step().expected
+
+                vr = self.verifier.verify_tool_result(
+                    tool_name=tr.name,
+                    result=tr.result if hasattr(tr, 'result') else None,
+                    error=tr.error if hasattr(tr, 'error') else "",
+                    expected=expected,
+                )
+                wm.record_verification(
+                    tool=tr.name,
+                    passed=vr.passed,
+                    issues=vr.issues,
+                    suggestions=vr.suggestions,
+                )
+
+                # 验证失败但工具报告成功 → 修正 success 标记
+                if not vr.passed and tr.success and vr.severity == "error":
+                    wm.add_finding(f"{tr.name} 虽然返回成功但验证发现问题: {'; '.join(vr.issues[:2])}")
 
         # 标记计划步骤完成
         plan = wm.execution_plan

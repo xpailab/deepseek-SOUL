@@ -135,6 +135,7 @@ class WorkingMemory:
     ruled_out: list[str] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
     error_patterns: list[dict[str, Any]] = field(default_factory=list)
+    verifications: list[dict[str, Any]] = field(default_factory=list)
     execution_plan: ExecutionPlan = field(default_factory=ExecutionPlan)
     _diagnosis_count: int = 0
 
@@ -155,6 +156,15 @@ class WorkingMemory:
             "error": error[:300],
             "diagnosis": diagnosis[:300],
             "fix": fix[:300],
+            "time": time.time(),
+        })
+
+    def record_verification(self, tool: str, passed: bool, issues: list[str] | None = None, suggestions: list[str] | None = None):
+        self.verifications.append({
+            "tool": tool,
+            "passed": passed,
+            "issues": issues or [],
+            "suggestions": suggestions or [],
             "time": time.time(),
         })
 
@@ -217,6 +227,16 @@ class WorkingMemory:
                 lines.append(f"  - {f}")
             sections.append("\n".join(lines))
 
+        # 验证失败
+        failed_verifications = [v for v in self.verifications[-5:] if not v["passed"]]
+        if failed_verifications:
+            lines = ["## 输出验证失败（结果不符合预期）"]
+            for v in failed_verifications:
+                lines.append(f"  - ✗ {v['tool']}: {'; '.join(v['issues'][:3])}")
+                for s in v["suggestions"][:2]:
+                    lines.append(f"    → {s}")
+            sections.append("\n".join(lines))
+
         # 错误模式
         if self.error_patterns:
             recent_errors = self.error_patterns[-3:]
@@ -274,5 +294,6 @@ class WorkingMemory:
         self.ruled_out.clear()
         self.findings.clear()
         self.error_patterns.clear()
+        self.verifications.clear()
         self.execution_plan = ExecutionPlan()
         self._diagnosis_count = 0
