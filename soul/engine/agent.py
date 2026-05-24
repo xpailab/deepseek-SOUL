@@ -744,6 +744,128 @@ class Agent:
         )
 
     # ═══════════════════════════════════════════
+    # 编码自动化行为：强制验证 + 小步快跑 + 回归检查
+    # ═══════════════════════════════════════════
+
+    @staticmethod
+    def _is_coding_task(text: str) -> bool:
+        """检测是否为编码/开发类任务。"""
+        coding_keywords = [
+            "写", "创建", "开发", "实现", "修改", "重构", "改", "加",
+            "代码", "函数", "类", "模块", "接口", "API", "api",
+            ".py", ".js", ".go", ".rs", ".java", ".ts",
+            "app", "service", "controller", "model", "route",
+        ]
+        return any(kw in text for kw in coding_keywords)
+
+    def _coding_cadence_prompt(self, task: str) -> str:
+        """生成"小步快跑"编码节拍指令。"""
+        if not self._is_coding_task(task):
+            return ""
+        return (
+            "\n## 编码节拍规则 — 小步快跑\n"
+            "你是开发者，不是打字员。必须遵守以下节奏：\n"
+            "1. 写一小段代码（一个函数/一个类/一个文件）→ 立即用工具验证\n"
+            "2. 验证通过 → 写下一段\n"
+            "3. 验证失败 → 马上看错误 → 修正 → 再验证 → 通过才继续\n"
+            "4. 不要连续写 3 个文件才测一次——每个文件写完就测\n"
+            "5. 不要猜测代码能不能跑——跑一下就知道\n"
+            "6. 完成后运行项目已有的测试套件（pytest/go test/npm test）确认没破坏已有功能"
+        )
+
+    def _coding_guard(self, round_results: list) -> str:
+        """强制编译检查——检测到代码写入后注入验证指令。"""
+        code_writes = []
+        for tr in round_results:
+            if not hasattr(tr, 'success') or not tr.success:
+                continue
+            if tr.name not in ("write_file", "write", "edit_file", "edit", "file"):
+                continue
+            # 获取写入的文件路径
+            filepath = ""
+            if hasattr(tr, 'result'):
+                if isinstance(tr.result, dict):
+                    filepath = tr.result.get("path", tr.result.get("file_path", ""))
+                elif isinstance(tr.result, str):
+                    filepath = tr.result
+
+            ext = filepath[filepath.rfind("."):].lower() if "." in filepath else ""
+            if ext in (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".sh"):
+                code_writes.append(filepath)
+
+        if not code_writes:
+            return ""
+
+        # 生成强制验证指令
+        cmds = []
+        for fp in code_writes[-3:]:  # 最多3个文件
+            cmd = self._build_verify_prompt("write_file", fp)
+            if cmd:
+                cmds.append(cmd)
+
+        if not cmds:
+            return ""
+
+        return (
+            "\n## ⚠️ 刚修改了代码文件 — 必须立即验证\n"
+            + "\n".join(cmds)
+            + "\n\n不要跳过这一步。不要继续写下一个文件。先运行上面的检查命令。"
+        )
+
+    def _regression_guard(self) -> str:
+        """回归检查——任务快完成时强制全量测试。"""
+        plan = self.working_memory.execution_plan
+        if plan.is_empty():
+            return ""
+
+        total = len(plan.steps)
+        completed = sum(1 for s in plan.steps if s.completed)
+        # 80%完成时触发
+        if total < 3 or completed < max(2, int(total * 0.8)):
+            return ""
+
+        # 只在首次触发时注入
+        if self.working_memory.has_tried("回归测试"):
+            return ""
+
+        self.working_memory.record_attempt("回归测试", success=False,
+            result="待执行", tool="_regression")
+
+        return (
+            "\n## 回归检查 — 任务接近完成\n"
+            "大部分步骤已完成。在报告'任务完成'之前，必须运行一次完整验证：\n"
+            "- 如果有 Makefile: 运行 make test 或 make check\n"
+            "- 如果有 pyproject.toml: 运行 pytest 或 python -m pytest\n"
+            "- 如果有 package.json: 运行 npm test\n"
+            "- 如果有 go.mod: 运行 go test ./...\n"
+            "- 如果有 Cargo.toml: 运行 cargo test\n"
+            "- 至少运行新增/修改文件的编译检查和语法检查\n"
+            "确认全部通过后才可以说'任务完成'。如果测试失败，修复后再宣告完成。"
+        )
+
+    def _coding_guard_from_memory(self) -> str:
+        """从工作记忆中检查本轮是否写了代码 → 强制验证。"""
+        code_writes = self.working_memory.code_writes
+        if not code_writes:
+            return ""
+
+        cmds = []
+        for fp in code_writes[-3:]:
+            cmd = self._build_verify_prompt("write_file", fp)
+            if cmd:
+                cmds.append(cmd)
+        if not cmds:
+            return ""
+
+        self.working_memory.code_writes.clear()
+
+        return (
+            "\n## ⚠️ 刚修改了代码文件 — 必须立即验证再继续\n"
+            + "\n".join(cmds)
+            + "\n\n❗ 先跑上面的检查。通过了再写下一个文件。不要跳过。"
+        )
+
+    # ═══════════════════════════════════════════
     # 问题解决增强：计划 + 工作记忆 + 自纠错 + 验证
     # ═══════════════════════════════════════════
 
@@ -784,8 +906,23 @@ class Agent:
                 else:
                     # 侦察阶段指令：动手前先看清楚
                     parts.append(self._recon_prompt(user_message))
+                    # 编码任务：注入小步快跑节拍
+                    coding_cadence = self._coding_cadence_prompt(user_message)
+                    if coding_cadence:
+                        parts.append(coding_cadence)
                     # 规划指令
                     parts.append(wm.get_planning_prompt(user_message))
+
+        # 强制编码验证：上轮写了代码就注入检查指令
+        if not first_round:
+            code_guard = self._coding_guard_from_memory()
+            if code_guard:
+                parts.append(code_guard)
+
+        # 回归检查（任务快完成时注入）
+        regression = self._regression_guard()
+        if regression:
+            parts.append(regression)
 
         # 错误知识库建议（当最近有失败时）
         last_err = wm.last_error()
@@ -878,17 +1015,18 @@ class Agent:
                 if not vr.passed and tr.success and vr.severity == "error":
                     wm.add_finding(f"{tr.name} 虽然返回成功但验证发现问题: {'; '.join(vr.issues[:2])}")
 
-                # 编译/运行验证：修改代码文件后自动建议检查
+                # 编译/运行验证：修改代码文件后追踪并强制检查
                 if tr.success and tr.name in ("write_file", "write", "edit_file", "edit", "file"):
                     filepath = ""
                     if hasattr(tr, 'result') and isinstance(tr.result, dict):
                         filepath = tr.result.get("path", tr.result.get("file_path", ""))
-                    if not filepath and hasattr(tr, 'arguments') and isinstance(tr.arguments, dict):
-                        pass  # tr.arguments not directly accessible from ToolResult
                     if filepath:
-                        verify_prompt = self._build_verify_prompt(tr.name, filepath)
-                        if verify_prompt:
-                            wm.add_finding(verify_prompt.strip())
+                        ext = filepath[filepath.rfind("."):].lower() if "." in filepath else ""
+                        if ext in (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".sh"):
+                            wm.code_writes.append(filepath)
+                            verify_prompt = self._build_verify_prompt(tr.name, filepath)
+                            if verify_prompt:
+                                wm.add_finding(verify_prompt.strip())
 
         # 标记计划步骤完成
         plan = wm.execution_plan

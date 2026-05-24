@@ -136,6 +136,7 @@ class WorkingMemory:
     findings: list[str] = field(default_factory=list)
     error_patterns: list[dict[str, Any]] = field(default_factory=list)
     verifications: list[dict[str, Any]] = field(default_factory=list)
+    code_writes: list[str] = field(default_factory=list)  # 本轮写入的代码文件路径
     execution_plan: ExecutionPlan = field(default_factory=ExecutionPlan)
     _diagnosis_count: int = 0
 
@@ -295,5 +296,6 @@ class WorkingMemory:
         self.findings.clear()
         self.error_patterns.clear()
         self.verifications.clear()
+        self.code_writes.clear()
         self.execution_plan = ExecutionPlan()
         self._diagnosis_count = 0
