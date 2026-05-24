@@ -155,6 +155,10 @@ class Agent:
         from soul.safety.sandbox import Sandbox
         self.sandbox = Sandbox(self.config.sandbox if hasattr(self.config, 'sandbox') else None)
 
+        # 审计系统
+        from soul.safety.auditor import Auditor
+        self.auditor = Auditor()
+
         # 事件系统
         self._event_handlers: dict[str, list[Any]] = {}
         self._initialized = False
@@ -304,7 +308,7 @@ class Agent:
                 for tc in response.tool_calls:
                     if len(all_tool_results) >= max_total_tools:
                         break
-                    tr = await self._execute_tool(tc)
+                    tr = await self._execute_tool(tc, session_id)
                     round_results.append(tr)
                     all_tool_results.append(tr)
                     if tr.success:
@@ -521,7 +525,7 @@ class Agent:
                 for tc in round_tool_calls:
                     if len(all_tool_results) >= max_total_tools:
                         break
-                    tr = await self._execute_tool(tc)
+                    tr = await self._execute_tool(tc, session_id)
                     round_results.append(tr)
                     all_tool_results.append(tr)
                     if tr.success:
@@ -590,9 +594,9 @@ class Agent:
                 self.lane_queue.mark_done(session_id)
 
     async def _execute_tool(
-        self, tool_call: ToolCall
+        self, tool_call: ToolCall, session_id: str = ""
     ) -> ToolResult:
-        """执行工具调用（带安全检查）。"""
+        """执行工具调用（带安全检查 + 审计记录）。"""
         tool_def = self.tools.get(tool_call.name)
         if not tool_def:
             return ToolResult(
@@ -608,6 +612,11 @@ class Agent:
             tool_call.name, tool_call.arguments, tool_def.risk
         )
         if not is_safe:
+            self.auditor.record_safety_block(
+                tool_name=tool_call.name,
+                reason=reason,
+                arguments=tool_call.arguments,
+            )
             return ToolResult(
                 call_id=tool_call.id,
                 name=tool_call.name,
@@ -641,6 +650,11 @@ class Agent:
                 result = sandbox_result.get("stdout", "")
                 error = sandbox_result.get("stderr", "")
                 retries = 0
+                self.auditor.record_file_access(
+                    filepath=f"sandbox:{tool_call.name}",
+                    action="sandbox_execute",
+                    session_id=session_id,
+                )
             else:
                 result, error, retries = await self.retry_mgr.execute_with_retry(
                     tool_def.handler,
@@ -657,6 +671,14 @@ class Agent:
         tool_def.call_count += 1
         if error:
             tool_def.error_count += 1
+
+        # 审计记录
+        self.auditor.record_tool_call(
+            tool_name=tool_call.name,
+            arguments=tool_call.arguments,
+            result=str(result)[:500] if result else error or "",
+            session_id=session_id,
+        )
 
         return self.classifier.classify(
             tool_call.name,
@@ -800,6 +822,7 @@ class Agent:
     async def shutdown(self) -> None:
         """关闭 Agent。"""
         self._running = False
+        self.auditor.flush()
         if self._initialized:
             await self.sessions.close_all()
             await self.memory.close()

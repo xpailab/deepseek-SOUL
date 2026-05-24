@@ -11,6 +11,7 @@ from typing import Any
 from soul.engine.agent import Agent
 from soul.engine.task_stages import TaskStagePlanner
 from soul.gateway.router import ChannelMessage, MessageRouter
+from soul.safety.auditor import Auditor
 from soul.types import GatewayConfig
 
 
@@ -40,9 +41,12 @@ class Gateway:
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._stats: dict[str, Any] = {"messages_processed": 0, "errors": 0, "uptime_start": 0}
+        self.auditor: Auditor | None = None
+        self.connectors: dict[str, Any] = {}
 
     async def start(self, agent=None, host="", port=0):
         self.agent = agent
+        self.auditor = agent.auditor if agent else None
         self._running = True
         self._stats["uptime_start"] = time.time()
         host = host or self.config.host
@@ -58,6 +62,13 @@ class Gateway:
 
     async def stop(self):
         self._running = False
+        if self.auditor:
+            self.auditor.flush()
+        for connector in self.connectors.values():
+            try:
+                await connector.disconnect()
+            except Exception:
+                pass
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -78,10 +89,31 @@ class Gateway:
     async def _handle_cli_message(self, msg):
         return await self.handle_message(msg)
 
+    async def register_connector(self, connector) -> None:
+        """注册平台连接器并启动消息监听。"""
+        self.connectors[connector.name] = connector
+        if not connector.is_connected:
+            await connector.connect()
+
+        async def on_message(chat_id: str = "", text: str = "", user_name: str = "", **kwargs):
+            msg = ChannelMessage(
+                raw_text=text,
+                channel=connector.name,
+                channel_user_id=str(chat_id),
+                channel_user_name=user_name,
+            )
+            await self.handle_message(msg)
+
+        connector.on("message", on_message)
+
+        if hasattr(connector, "listen") and callable(connector.listen):
+            task = asyncio.create_task(connector.listen())
+            self._tasks.append(task)
+
     async def _serve(self, host, port):
         try:
             import uvicorn
-            from fastapi import FastAPI, WebSocket
+            from fastapi import FastAPI, Request, WebSocket
             from fastapi.responses import HTMLResponse, JSONResponse
 
             app = FastAPI()
@@ -103,6 +135,12 @@ class Gateway:
                 a = self.agent
                 if not a:
                     return JSONResponse({"error": "Agent 未就绪"}, 503)
+                if self.auditor:
+                    self.auditor.record("api_access", {
+                        "endpoint": "/api/chat",
+                        "session_id": sid,
+                        "message_len": len(msg),
+                    })
                 reply = await a.chat(msg, session_id=sid)
                 return {"reply": reply, "session_id": sid}
 
@@ -124,6 +162,73 @@ class Gateway:
                 a = self.agent
                 return await a.sessions.list_sessions() if a else []
 
+            @app.get("/api/audit")
+            async def api_audit(event_type: str = "", severity: str = "", limit: int = 50):
+                if not self.auditor:
+                    return JSONResponse({"error": "审计未启用"}, 503)
+                events = self.auditor.query(
+                    event_type=event_type, severity=severity, limit=limit
+                )
+                return {"events": events, "count": len(events)}
+
+            @app.get("/api/audit/report")
+            async def api_audit_report():
+                if not self.auditor:
+                    return JSONResponse({"error": "审计未启用"}, 503)
+                return self.auditor.get_security_report()
+
+            @app.post("/webhook/{platform}")
+            async def webhook_receiver(platform: str, request: Request):
+                """接收平台 Webhook 回调，路由到 Agent 处理。"""
+                try:
+                    body = await request.json()
+                except Exception:
+                    return JSONResponse({"error": "无效的 JSON 请求体"}, 400)
+
+                # URL 验证（飞书/钉钉）
+                if platform == "feishu" and body.get("type") == "url_verification":
+                    return {"challenge": body.get("challenge", "")}
+                if platform == "dingtalk" and "test" in body:
+                    return {"status": "ok"}
+
+                if not self.agent:
+                    return JSONResponse({"error": "Agent 未就绪"}, 503)
+
+                # 解析平台消息
+                text = ""
+                sender_id = ""
+                if platform == "qq":
+                    text = body.get("content", "")
+                    sender_id = body.get("author", {}).get("id", "")
+                elif platform == "wechat":
+                    text = body.get("Content", "")
+                    sender_id = body.get("FromUserName", "")
+                elif platform == "dingtalk":
+                    text = body.get("text", {}).get("content", "")
+                    sender_id = body.get("senderStaffId", "")
+                elif platform == "feishu":
+                    event = body.get("event", {})
+                    text = event.get("text", "")
+                    sender_id = event.get("sender", {}).get("sender_id", "")
+                elif platform == "telegram":
+                    msg = body.get("message", {})
+                    text = msg.get("text", "")
+                    sender_id = str(msg.get("chat", {}).get("id", ""))
+
+                if not text:
+                    return {"status": "ignored", "reason": "empty message"}
+
+                # 通过 Agent 处理消息
+                sid = f"{platform}:{sender_id}"
+                reply = await self.agent.chat(text, session_id=sid)
+
+                # 通过连接器回复
+                connector = self.connectors.get(platform)
+                if connector and connector.is_connected:
+                    await connector.send_message(reply, chat_id=sender_id)
+
+                return {"status": "ok", "reply": reply[:200], "session_id": sid}
+
             @app.websocket("/ws/chat")
             async def ws_chat(ws: WebSocket):
                 await ws.accept()
@@ -134,6 +239,12 @@ class Gateway:
                         sid = data.get("session_id", "")
                         if not txt or not self.agent:
                             continue
+                        if self.auditor:
+                            self.auditor.record("api_access", {
+                                "endpoint": "/ws/chat",
+                                "session_id": sid,
+                                "message_len": len(txt),
+                            })
                         try:
                             from soul.engine.parallel import ParallelAgent, _llm_classify
                             base_cfg = self.agent.config

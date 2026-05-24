@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from soul.gateway.session_sync import PlatformConnector
+from soul.gateway.connectors.base import PlatformConnector
 
 
 class QQConnector(PlatformConnector):
