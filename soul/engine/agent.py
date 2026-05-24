@@ -693,19 +693,23 @@ class Agent:
         import os
         cwd = os.getcwd()
         ambiguous = self._is_vague_task(task)
-        lines = [f"\n## 当前工作目录: {cwd}", "\n## 当前阶段: 侦察与理解"]
 
+        # 检测用户是否在问"当前项目"相关问题（没有指定具体路径）
+        local_phrases = ["这个项目", "当前项目", "这个目录", "干嘛", "是什么", "这是啥", "这里的"]
+        has_specific_path = any(ext in task for ext in [".py", ".js", ".ts", ".go", ".md", ".json", ".yaml", "D:"])
+        is_local_question = any(p in task for p in local_phrases) and not has_specific_path
+
+        lines = [f"\n## 用户当前工作目录: {cwd}"]
+        if is_local_question:
+            lines.append(f"**用户问的是 `{cwd}` 这个目录下的项目，不是 deepsoul 自己。**")
+            lines.append(f"请用 file list 和 read 工具探索 `{cwd}` 目录。")
+
+        lines.append("\n## 当前阶段: 侦察与理解")
         if ambiguous:
             lines.append("⚠️ 用户的任务描述比较模糊，请先反问 1-2 个具体问题确认需求。")
-            lines.append("同时用只读工具快速了解相关现状（项目结构、最近改动、相关文件）。")
-            lines.append("如果信息足够推断用户意图，可以直接给出答案或开始执行。")
         else:
-            lines.append("在制定计划之前，先用 1-2 个只读工具快速摸底：")
-            lines.append("1. 读相关文件（了解现有代码/配置）")
-            lines.append("2. 查项目结构（确认文件位置和依赖）")
-            lines.append("3. 查 git 状态（了解最近的改动）")
-            lines.append("侦察后简要总结发现，然后制定执行计划并开始执行。")
-            lines.append("不要花超过 1 轮做侦察——够用就立刻动手。")
+            lines.append("在制定计划之前，先用 1-2 个只读工具快速摸底当前工作目录的结构。")
+        lines.append("侦察后简要总结发现，然后制定执行计划并开始执行。")
 
         return "\n".join(lines)
 
