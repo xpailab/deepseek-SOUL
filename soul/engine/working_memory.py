@@ -187,38 +187,45 @@ class WorkingMemory:
 
     def needs_full_rewrite(self) -> str:
         """检测是否陷入逐行修补死循环。
-        条件：最近 3 次工具执行都是"同文件编辑+运行失败"模式。
+        条件：最近工具执行中有"编辑文件+运行失败"的循环，同一文件≥2次。
         返回：需要重写的文件路径，空字符串表示不需要。
         """
-        recent = self.attempts[-6:]
-        if len(recent) < 3:
+        recent = self.attempts[-8:]
+        if len(recent) < 2:
             return ""
 
-        # 统计最近对同一文件的 write/edit + bash 失败模式
-        edit_files: dict[str, list[bool]] = {}
-        for a in recent:
-            tool = a.get("tool", "")
-            # 追踪文件编辑操作
-            if tool in ("write_file", "write", "edit_file", "edit", "file"):
-                # 从 result 中提取文件路径
-                r = str(a.get("result", ""))
-                for line in r.split("\n"):
-                    if "." in line and any(line.endswith(ext) for ext in (".py", ".js", ".ts", ".go")):
-                        fp = line.strip().split()[-1] if line.strip().split() else ""
-                        if fp and fp not in edit_files:
-                            edit_files[fp] = []
-                        if fp:
-                            edit_files[fp].append(a.get("success", False))
-                        break
-            elif tool in ("bash", "shell"):
-                # 运行失败 → 标记最近编辑的文件
-                if not a.get("success"):
-                    for fp in edit_files:
-                        edit_files[fp].append(False)
+        # 检测模式: file编辑 → bash运行失败 → file再编辑
+        code_exts = (".py", ".js", ".ts", ".go", ".rs", ".java", ".sh")
+        file_edit_count: dict[str, int] = {}
+        run_failures_after_edit = 0
 
-        for fp, results in edit_files.items():
-            # 同一文件有 3+ 次编辑且有失败
-            if len(results) >= 3 and not all(results):
+        for i, a in enumerate(recent):
+            tool = a.get("tool", "")
+            result_str = str(a.get("result", ""))
+
+            # 文件编辑
+            if tool in ("write_file", "write", "edit_file", "edit", "file"):
+                for line in result_str.split("\n"):
+                    for ext in code_exts:
+                        if ext in line:
+                            fp = line.strip().rsplit(ext, 1)[0] + ext
+                            fp = fp.split()[-1] if fp.split() else fp
+                            file_edit_count[fp] = file_edit_count.get(fp, 0) + 1
+
+            # bash 运行（且失败）
+            if tool in ("bash", "shell", "exec", "run") and not a.get("success"):
+                # 检查前面是否有文件编辑
+                prev_edits = any(
+                    recent[j].get("tool", "") in ("write_file", "write", "edit_file", "edit", "file")
+                    for j in range(max(0, i - 2), i)
+                )
+                if prev_edits:
+                    run_failures_after_edit += 1
+
+        # 有 ≥2 次"编辑后运行失败" → 触发重写
+        if run_failures_after_edit >= 2 and file_edit_count:
+            fp = max(file_edit_count, key=file_edit_count.get)
+            if file_edit_count[fp] >= 2:
                 return fp
         return ""
 
