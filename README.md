@@ -3,7 +3,7 @@
 DeepSoul is an AI agent that **gets smarter with every interaction** — it controls computers, writes code, manages projects, runs scheduled tasks, and learns from every task to improve itself.
 
 > Built with [deepseek-v4-pro](https://platform.deepseek.com) (98%) and [kimi-k2.5](https://platform.moonshot.cn) for multimodal understanding (2%).  
-> [中文说明 →](参照.md)
+> [中文说明 →](README_zh.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
