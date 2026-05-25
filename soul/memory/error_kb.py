@@ -95,6 +95,7 @@ class ErrorKnowledgeBase:
             "total_successes": 0,
         }
         self._loaded = False
+        self._dirty = False
 
     # ═══ 持久化 ═══
 
@@ -113,8 +114,11 @@ class ErrorKnowledgeBase:
                 pass
         self._loaded = True
 
-    def save(self) -> None:
-        """保存知识库到磁盘。"""
+    def save(self, force: bool = False) -> None:
+        """保存知识库到磁盘。无变更时跳过。"""
+        if not self._dirty and not force:
+            return
+        self._dirty = False
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "entries": [e.to_dict() for e in self.entries.values()],
@@ -224,6 +228,7 @@ class ErrorKnowledgeBase:
             )
             self.entries[sig] = entry
 
+        self._dirty = True
         # 裁剪
         self._prune()
         return entry
@@ -234,6 +239,7 @@ class ErrorKnowledgeBase:
         if sig in self.entries:
             self.entries[sig].success_count += 1 if success else 0
             self.stats["total_fixes_applied"] += 1
+            self._dirty = True
             if success:
                 self.stats["total_successes"] += 1
 

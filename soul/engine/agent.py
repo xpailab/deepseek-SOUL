@@ -230,48 +230,18 @@ class Agent:
             acquired = True
 
         try:
-            # 更新状态
-            await self.sessions.update_state(session_id, AgentState.THINKING)
+            ctx = await self._setup_chat_context(user_message, session_id, system_prompt, tools)
+            base_system_prompt = ctx["base_system_prompt"]
+            current_messages = ctx["current_messages"]
+            saved_len = ctx["saved_len"]
+            config = ctx["config"]
 
-            # 获取会话历史
-            history = await self.sessions.get_history(session_id)
-
-            # 构建系统提示（含技能匹配 + 记忆检索）
-            memory_context = await self.memory.query_for_prompt(user_message)
-            matched_skills = self.memory.procedural.match(user_message, top_k=2)
-            base_system_prompt = self.prompt_builder.build_system_prompt(
-                matched_skills=matched_skills,
-                tools=tools or self.tools.to_api_schemas(),
-                extra_context=memory_context,
-            )
-            if system_prompt:
-                base_system_prompt = base_system_prompt + "\n\n" + system_prompt
-
-            # 工作记忆增强 + 执行规划注入
-            enhanced_prompt = self._build_enhanced_prompt(
-                base_system_prompt, user_message, first_round=True
-            )
-            self.working_memory.clear()
-
-            # 构建消息
-            user_msg = Message(role=MessageRole.USER, content=user_message)
-
-            full_messages = self.prompt_builder.build_messages(
-                history + [user_msg],
-                system_prompt=enhanced_prompt,
-                tools=tools or self.tools.to_api_schemas(),
-            )
-
-            # LLM 推理 + 工具调用循环
             max_rounds = 50
             max_total_tools = 100
             consecutive_fails = 0
             actual_rounds = 0
-            config = self.config.llm
             all_tool_results: list[ToolResult] = []
             final_content = ""
-            current_messages = list(full_messages)
-            saved_len = len(current_messages)
 
             for round_num in range(max_rounds):
                 # 中循环压缩: 每5轮检查 token 用量，防止工具调用爆窗口
@@ -368,41 +338,11 @@ class Agent:
                 # final_content 已经在上面累积了，不要覆盖
                 # 继续下一轮循环，让LLM看到工具执行结果
 
-            # 循环结束：生成任务执行报告
-            report = _build_task_report(
-                user_message, actual_rounds, all_tool_results,
-                len(all_tool_results) >= max_total_tools,
-                consecutive_fails >= 5,
+            return await self._finalize_chat(
+                user_message, session_id, current_messages, saved_len,
+                all_tool_results, actual_rounds, consecutive_fails,
+                final_content, max_total_tools,
             )
-            final_content = final_content + "\n\n" + report if final_content else report
-
-            # 只保存本轮新产生的消息
-            for msg in current_messages[saved_len:]:
-                await self.sessions.add_message(session_id, msg)
-
-            if not final_content:
-                final_content = "抱歉，任务未能完成。请重试或简化您的请求。"
-
-            await self.memory.observe_action(user_message)
-            await self.memory.store_conversation(session_id, current_messages)
-            summary = f"用户: {user_message[:100]} | 回复: {final_content[:100]}"
-            await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
-
-            # 技能自动学习 — 成功任务 → 提取模式 → 生成/进化技能
-            if self.config.skill.auto_generate and consecutive_fails < 5:
-                await self._learn_from_task(user_message, current_messages, all_tool_results)
-
-            # 保存检查点：任务成功 → 标记完成；否则保留用于续跑
-            if consecutive_fails < 5:
-                self.checkpoint_mgr.mark_complete(session_id)
-            else:
-                self._save_checkpoint(session_id, user_message)
-
-            # 持久化错误知识库
-            self.error_kb.save()
-
-            await self.sessions.update_state(session_id, AgentState.IDLE)
-            return final_content
 
         except Exception as e:
             error_msg = f"执行任务时出错: {str(e)}"
@@ -450,38 +390,16 @@ class Agent:
         self.lane_queue.track_active(session_id)
 
         try:
-            await self.sessions.update_state(session_id, AgentState.STREAMING)
-
-            history = await self.sessions.get_history(session_id)
-
-            # 构建基础prompt，工作记忆增强
-            memory_context = await self.memory.query_for_prompt(user_message)
-            matched_skills = self.memory.procedural.match(user_message, top_k=2)
-            base_system_prompt = self.prompt_builder.build_system_prompt(
-                matched_skills=matched_skills,
-                tools=tools or self.tools.to_api_schemas(),
-                extra_context=memory_context,
+            ctx = await self._setup_chat_context(
+                user_message, session_id, system_prompt, tools,
+                state=AgentState.STREAMING,
             )
-            if system_prompt:
-                base_system_prompt = base_system_prompt + "\n\n" + system_prompt
-
-            enhanced_prompt = self._build_enhanced_prompt(
-                base_system_prompt, user_message, first_round=True
-            )
-            self.working_memory.clear()
-
-            user_msg = Message(role=MessageRole.USER, content=user_message)
-
-            full_messages = self.prompt_builder.build_messages(
-                history + [user_msg],
-                system_prompt=enhanced_prompt,
-                tools=tools or self.tools.to_api_schemas(),
-            )
-
-            config = self.config.llm
+            base_system_prompt = ctx["base_system_prompt"]
+            current_messages = ctx["current_messages"]
+            saved_len = ctx["saved_len"]
+            config = ctx["config"]
             full_content = ""
 
-            # 注册 steer 回调
             steer_queue: asyncio.Queue[str] = asyncio.Queue()
 
             async def steer_cb(text: str) -> None:
@@ -489,13 +407,10 @@ class Agent:
 
             self.lane_queue.register_steer_callback(session_id, steer_cb)
 
-            # LLM 推理 + 工具调用循环
             max_rounds = 50
             max_total_tools = 100
             consecutive_fails = 0
             actual_rounds = 0
-            current_messages = list(full_messages)
-            saved_len = len(current_messages)
             all_tool_results: list[ToolResult] = []
 
             for round_num in range(max_rounds):
@@ -605,7 +520,7 @@ class Agent:
                     )
                     current_messages.append(tool_msg)
 
-            # 生成任务执行报告
+            # 生成任务执行报告并 yield（流式特有）
             report = _build_task_report(
                 user_message, actual_rounds, all_tool_results,
                 len(all_tool_results) >= max_total_tools,
@@ -615,30 +530,15 @@ class Agent:
             yield StreamChunk(content=report_chunk)
             full_content = full_content + report_chunk if full_content else report
 
-            # 只保存本轮新产生的消息
-            for msg in current_messages[saved_len:]:
-                await self.sessions.add_message(session_id, msg)
-
             if not full_content:
                 full_content = "抱歉，任务未能完成。请重试或简化您的请求。"
                 yield StreamChunk(content=full_content)
 
-            await self.memory.observe_action(user_message)
-            await self.memory.store_conversation(session_id, current_messages)
-            summary = f"用户: {user_message[:100]} | 回复: {full_content[:100]}"
-            await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
-
-            # 技能自动学习
-            if self.config.skill.auto_generate and consecutive_fails < 5:
-                await self._learn_from_task(user_message, current_messages, all_tool_results)
-
-            if consecutive_fails < 5:
-                self.checkpoint_mgr.mark_complete(session_id)
-            else:
-                self._save_checkpoint(session_id, user_message)
-            self.error_kb.save()
-
-            await self.sessions.update_state(session_id, AgentState.IDLE)
+            await self._finalize_chat(
+                user_message, session_id, current_messages, saved_len,
+                all_tool_results, actual_rounds, consecutive_fails,
+                full_content, max_total_tools,
+            )
 
         except Exception as e:
             yield StreamChunk(content=f"\n[执行出错: {str(e)}]", finish_reason="error")
@@ -1058,6 +958,81 @@ class Agent:
                 ]
                 if failed_names:
                     wm.rule_out(f"{', '.join(failed_names)} 方向")
+
+    async def _setup_chat_context(
+        self, user_message: str, session_id: str,
+        system_prompt: str, tools: list[dict] | None,
+        state: AgentState = AgentState.THINKING,
+    ) -> dict:
+        """chat/chat_stream 公共前置处理——记忆检索+Prompt构建+循环变量初始化。"""
+        await self.sessions.update_state(session_id, state or AgentState.THINKING)
+        history = await self.sessions.get_history(session_id)
+        memory_context = await self.memory.query_for_prompt(user_message)
+        matched_skills = self.memory.procedural.match(user_message, top_k=2)
+        base_system_prompt = self.prompt_builder.build_system_prompt(
+            matched_skills=matched_skills,
+            tools=tools or self.tools.to_api_schemas(),
+            extra_context=memory_context,
+        )
+        if system_prompt:
+            base_system_prompt = base_system_prompt + "\n\n" + system_prompt
+
+        enhanced_prompt = self._build_enhanced_prompt(
+            base_system_prompt, user_message, first_round=True
+        )
+        self.working_memory.clear()
+
+        user_msg = Message(role=MessageRole.USER, content=user_message)
+        full_messages = self.prompt_builder.build_messages(
+            history + [user_msg],
+            system_prompt=enhanced_prompt,
+            tools=tools or self.tools.to_api_schemas(),
+        )
+        return {
+            "base_system_prompt": base_system_prompt,
+            "current_messages": list(full_messages),
+            "saved_len": len(full_messages),
+            "config": self.config.llm,
+        }
+
+    async def _finalize_chat(
+        self, user_message: str, session_id: str,
+        current_messages: list, saved_len: int,
+        all_tool_results: list, actual_rounds: int,
+        consecutive_fails: int, final_content: str,
+        max_total_tools: int,
+    ) -> str:
+        """chat/chat_stream 公共后处理——报告+持久化+技能学习+检查点。"""
+        report = _build_task_report(
+            user_message, actual_rounds, all_tool_results,
+            len(all_tool_results) >= max_total_tools,
+            consecutive_fails >= 5,
+        )
+        final_content = final_content + "\n\n" + report if final_content else report
+
+        for msg in current_messages[saved_len:]:
+            await self.sessions.add_message(session_id, msg)
+
+        if not final_content:
+            final_content = "抱歉，任务未能完成。请重试或简化您的请求。"
+
+        await self.memory.observe_action(user_message)
+        await self.memory.store_conversation(session_id, current_messages)
+        summary = f"用户: {user_message[:100]} | 回复: {final_content[:100]}"
+        await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
+
+        is_simple = (actual_rounds == 1 and len(all_tool_results) == 0)
+        if not is_simple:
+            if self.config.skill.auto_generate and consecutive_fails < 5:
+                await self._learn_from_task(user_message, current_messages, all_tool_results)
+            if consecutive_fails < 5:
+                self.checkpoint_mgr.mark_complete(session_id)
+            else:
+                self._save_checkpoint(session_id, user_message)
+            self.error_kb.save()
+
+        await self.sessions.update_state(session_id, AgentState.IDLE)
+        return final_content
 
     async def _execute_tool(
         self, tool_call: ToolCall, session_id: str = ""

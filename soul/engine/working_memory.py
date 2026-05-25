@@ -139,10 +139,12 @@ class WorkingMemory:
     code_writes: list[str] = field(default_factory=list)  # 本轮写入的代码文件路径
     execution_plan: ExecutionPlan = field(default_factory=ExecutionPlan)
     _diagnosis_count: int = 0
+    _prompt_dirty: bool = True  # 缓存控制：内容变更时置 True
 
     # --- 记录方法 ---
 
     def record_attempt(self, action: str, tool: str = "", result: str = "", success: bool = False):
+        self._prompt_dirty = True
         self.attempts.append({
             "action": action,
             "tool": tool,
@@ -152,6 +154,7 @@ class WorkingMemory:
         })
 
     def record_error(self, tool: str, error: str, diagnosis: str = "", fix: str = ""):
+        self._prompt_dirty = True
         self.error_patterns.append({
             "tool": tool,
             "error": error[:300],
@@ -161,6 +164,7 @@ class WorkingMemory:
         })
 
     def record_verification(self, tool: str, passed: bool, issues: list[str] | None = None, suggestions: list[str] | None = None):
+        self._prompt_dirty = True
         self.verifications.append({
             "tool": tool,
             "passed": passed,
@@ -171,13 +175,16 @@ class WorkingMemory:
 
     def rule_out(self, direction: str):
         if direction not in self.ruled_out:
+            self._prompt_dirty = True
             self.ruled_out.append(direction)
 
     def add_finding(self, finding: str):
         if finding not in self.findings:
+            self._prompt_dirty = True
             self.findings.append(finding)
 
     def set_plan(self, plan: ExecutionPlan):
+        self._prompt_dirty = True
         self.execution_plan = plan
 
     def record_edit_failure(self, filepath: str, error: str = ""):
@@ -357,3 +364,4 @@ class WorkingMemory:
         self.code_writes.clear()
         self.execution_plan = ExecutionPlan()
         self._diagnosis_count = 0
+        self._prompt_dirty = True
