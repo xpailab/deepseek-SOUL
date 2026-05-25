@@ -597,21 +597,21 @@ class Agent:
         cwd = getattr(self, 'startup_cwd', '') or __import__('os').getcwd()
         ambiguous = self._is_vague_task(task)
 
-        # 检测用户是否在问"当前项目"相关问题（没有指定具体路径）
-        local_phrases = ["这个项目", "当前项目", "这个目录", "干嘛", "是什么", "这是啥", "这里的"]
-        has_specific_path = any(ext in task for ext in [".py", ".js", ".ts", ".go", ".md", ".json", ".yaml", "D:"])
-        is_local_question = any(p in task for p in local_phrases) and not has_specific_path
-
         lines = [f"\n## 用户当前工作目录: {cwd}"]
-        if is_local_question:
-            lines.append(f"**用户问的是 `{cwd}` 这个目录下的项目，不是 deepsoul 自己。**")
-            lines.append(f"请用 file list 和 read 工具探索 `{cwd}` 目录。")
+
+        # 多轮对话提醒：优先参考历史
+        lines.append(
+            "\n## 多轮对话注意"
+            "\n- 用户可能在延续之前的对话，先回顾**对话历史**，确认是否有相关的上文"
+            "\n- 如果用户说「刚才」「之前」「你构建的」等，指的是**对话历史中你刚完成的任务**"
+            "\n- 不要从头开始侦察——先看对话历史确认上下文"
+        )
 
         lines.append("\n## 当前阶段: 侦察与理解")
         if ambiguous:
-            lines.append("⚠️ 用户的任务描述比较模糊，请先反问 1-2 个具体问题确认需求。")
+            lines.append("⚠️ 用户的任务描述比较模糊——先回顾对话历史，如果上文已明确则直接回答，不要反问。")
         else:
-            lines.append("在制定计划之前，先用 1-2 个只读工具快速摸底当前工作目录的结构。")
+            lines.append("在制定计划之前，先用 1-2 个只读工具快速摸底。")
         lines.append("侦察后简要总结发现，然后制定执行计划并开始执行。")
 
         return "\n".join(lines)
