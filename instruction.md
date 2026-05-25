@@ -1,6 +1,7 @@
 # DeepSoul 内部处理与流转路径
 
-> 基于 `soul/engine/agent.py` 等源码逐行确认，非文档推测。
+> 基于源码逐行确认，非文档推测。
+> 行号会随代码变更漂移——本文用方法名和功能描述定位，标注 `→ <file>/<class>.<method>()` 指向源码。
 
 ---
 
@@ -9,132 +10,137 @@
 ### 阶段 0：启动与初始化
 
 ```
-cli.py:69   agent = Agent(config=config)
-             ├─ agent.py:125-178  __init__ 创建全部子系统:
-             │   self.llm           = AdapterRegistry()        ← LLM 适配器注册表
-             │   self.lane_queue    = LaneQueue(config.lane)    ← 双层并发调度
-             │   self.sessions      = SessionManager(...)      ← 会话状态管理
-             │   self.memory        = MemoryManager(config)    ← 4 层记忆
-             │   self.prompt_builder= PromptBuilder(...)       ← 系统提示组装
-             │   self.compressor    = ContextCompressor()      ← 上下文压缩
-             │   self.tools         = ToolRegistry()           ← 工具注册表
-             │   self.guardrails    = ToolGuardrails(...)      ← 安全护栏
-             │   self.classifier    = ResultClassifier()       ← 结果分类器
-             │   self.retry_mgr     = RetryManager()           ← 重试管理器
-             │   self.sandbox       = Sandbox(...)             ← 执行沙箱
-             │   self.auditor       = Auditor()                ← 审计记录
-             │   self.startup_cwd   = os.getcwd()             ← 启动时 CWD
-             │   self.working_memory= WorkingMemory()          ← 会话级工作记忆
-             │   self.verifier      = ResultVerifier()         ← 输出验证器
-             │   self.error_kb      = ErrorKnowledgeBase()     ← 跨会话错误知识库
-             │   self.checkpoint_mgr= CheckpointManager()      ← 断点续跑
+cli.py  chat 命令中
+  agent = Agent(config=config)
+    ├─ Agent.__init__()  创建全部子系统:
+    │   self.llm           = AdapterRegistry()        ← LLM 适配器注册表
+    │   self.lane_queue    = LaneQueue(config.lane)    ← 双层并发调度
+    │   self.sessions      = SessionManager(...)      ← 会话状态管理
+    │   self.memory        = MemoryManager(config)    ← 4 层记忆
+    │   self.prompt_builder= PromptBuilder(...)       ← 系统提示组装
+    │   self.compressor    = ContextCompressor()      ← 上下文压缩
+    │   self.tools         = ToolRegistry()           ← 工具注册表
+    │   self.guardrails    = ToolGuardrails(...)      ← 安全护栏
+    │   self.classifier    = ResultClassifier()       ← 结果分类器
+    │   self.retry_mgr     = RetryManager()           ← 重试管理器
+    │   self.sandbox       = Sandbox(...)             ← 执行沙箱
+    │   self.auditor       = Auditor()                ← 审计记录
+    │   self.startup_cwd   = os.getcwd()             ← 启动时 CWD
+    │   self.working_memory= WorkingMemory()          ← 会话级工作记忆
+    │   self.verifier      = ResultVerifier()         ← 输出验证器
+    │   self.error_kb      = ErrorKnowledgeBase()     ← 跨会话错误知识库
+    │   self.checkpoint_mgr= CheckpointManager()      ← 断点续跑
 
-cli.py:72   await agent.initialize()
-             ├─ agent.py:181  _register_builtin_tools()
-             │   → BashTool / FileTool / WebTool / BrowserTool / WindowsTool
-             ├─ agent.py:184  memory.initialize()
-             │   → 加载 4 层记忆 + bundled skills
-             ├─ agent.py:187  sessions.get_or_create("main")
-             └─ agent.py:190  error_kb.load()
+  await agent.initialize()
+    ├─ Agent._register_builtin_tools()
+    │   → BashTool / FileTool / WebTool / BrowserTool / WindowsTool
+    ├─ memory.initialize()
+    │   → 加载 4 层记忆 + bundled skills
+    ├─ sessions.get_or_create("main")
+    └─ error_kb.load()
 ```
 
 ### 阶段 1：消息入队（Lane Queue）
 
 ```
-agent.py:199  async def chat(user_message, session_id, system_prompt, tools):
-                │
-                ├─ agent.py:210  session = sessions.get_or_create(session_id)
-                │
-                ├─ agent.py:214  item = QueueItem(
-                │                    id=f"msg_{timestamp}", session_id,
-                │                    prompt=user_message, mode=QueueMode.ADAPTIVE
-                │                )
-                │
-                ├─ agent.py:222  result = lane_queue.enqueue(item)
-                │   └─ lane_queue.py:307  enqueue()
-                │       ├─ session_lane = global_lane.get_or_create_session_lane(sid)
-                │       ├─ mode = resolve_mode(item, is_streaming, is_busy)
-                │       │   └─ ADAPTIVE → _adaptive_choice():
-                │       │       优先级≥8→INTERRUPT | 流式+≥5→STEER
-                │       │       繁忙+积压→COLLECT  | 空闲→FOLLOWUP | 默认→QUEUE
-                │       └─ 按 mode 分派: steer/collect/enqueue
-                │
-                ├─ agent.py:227  item = lane_queue.dequeue(session_id)
-                │   └─ lane_queue.py:367  dequeue()
-                │       ├─ acquired = global_lane.acquire()   ← Semaphore(4)
-                │       └─ item = session_lane.dequeue()      ← asyncio.Queue
-                │
-                └─ agent.py:234  sessions.update_state(sid, THINKING)
+Agent.chat(user_message, session_id, system_prompt, tools):
+  │
+  ├─ session = sessions.get_or_create(session_id)  → chat() 方法开头
+  │
+  ├─ item = QueueItem(
+  │     id=f"msg_{timestamp}", session_id,
+  │     prompt=user_message, mode=QueueMode.ADAPTIVE
+  │ )
+  │
+  ├─ result = lane_queue.enqueue(item)
+  │   └─ → lane_queue/LaneQueue.enqueue()
+  │       ├─ session_lane = global_lane.get_or_create_session_lane(sid)
+  │       ├─ mode = resolve_mode(item, is_streaming, is_busy)
+  │       │   └─ ADAPTIVE → _adaptive_choice():
+  │       │       优先级≥8→INTERRUPT | 流式+≥5→STEER
+  │       │       繁忙+积压→COLLECT  | 空闲→FOLLOWUP | 默认→QUEUE
+  │       └─ 按 mode 分派: steer/collect/enqueue
+  │
+  ├─ item = lane_queue.dequeue(session_id)  → 紧接着 enqueue 之后
+  │   └─ → lane_queue/LaneQueue.dequeue()
+  │       ├─ acquired = global_lane.acquire()   ← Semaphore(4)
+  │       └─ item = session_lane.dequeue()      ← asyncio.Queue
+  │
+  └─ sessions.update_state(sid, THINKING)  → try 块首行
 ```
 
 ### 阶段 2：记忆检索 + Prompt 构建
 
 ```
-agent.py:237  history = sessions.get_history(session_id)
+Agent.chat() 内，状态更新后:
 
-agent.py:240  memory_context = memory.query_for_prompt(user_message)
-              └─ memory/manager.py:136  query_for_prompt(query)
-                  ├─ L2: procedural.match(query, top_k=2)     → 关键词匹配技能
-                  ├─ L3: indexed.search_semantic(query, limit=3) → FTS5 搜索历史
-                  ├─ L4: predictive.get_predictive_context_prompt() → 行为预测
-                  └─ UserModel: get_full_prompt_fragment()    → 用户画像
+  history = sessions.get_history(session_id)  → update_state 之后
 
-agent.py:241  matched_skills = memory.procedural.match(user_message, top_k=2)
+  memory_context = memory.query_for_prompt(user_message)
+    └─ → memory/manager/MemoryManager.query_for_prompt()
+        ├─ L2: procedural.match(query, top_k=2)     → 关键词匹配技能
+        ├─ L3: indexed.search_semantic(query, limit=3) → FTS5 搜索历史
+        ├─ L4: predictive.get_predictive_context_prompt() → 行为预测
+        └─ UserModel: get_full_prompt_fragment()    → 用户画像
 
-agent.py:242  base_system_prompt = prompt_builder.build_system_prompt(
-                  matched_skills, tools, extra_context=memory_context
-              )
-              └─ prompt/builder.py:69  build_system_prompt()
-                  按序组装 11 段 XML:
-                  ① <soul_personality>     ← SOUL.md
-                  ② <agent_identity>      ← IDENTITY.md
-                  ③ <agent_behavior>      ← AGENTS.md
-                  ④ <user_profile>        ← USER.md
-                  ⑤ <agent_memory>        ← MEMORY.md
-                  ⑥ <tools_guide>         ← TOOLS.md
-                  ⑦ <available_skills>    ← 匹配到的技能（如有）
-                  ⑧ <available_tools>     ← 工具声明（如有）
-                  ⑨ <context>             ← 记忆检索结果（如有）
-                  ⑩ <safety_rules>        ← 硬编码安全规则
-                  ⑪ <global_rules>        ← 硬编码行为规则
-                      含: 侦察/反问/编辑策略/编码验证/自纠错/执行报告规则
-                  所有用户文本经 _sanitize() 转义危险标签
+  matched_skills = memory.procedural.match(user_message, top_k=2)
+
+  base_system_prompt = prompt_builder.build_system_prompt(
+      matched_skills, tools, extra_context=memory_context
+  )
+    └─ → prompt/builder/PromptBuilder.build_system_prompt()
+        按序组装 11 段 XML:
+        ① <soul_personality>     ← SOUL.md
+        ② <agent_identity>      ← IDENTITY.md
+        ③ <agent_behavior>      ← AGENTS.md
+        ④ <user_profile>        ← USER.md
+        ⑤ <agent_memory>        ← MEMORY.md
+        ⑥ <tools_guide>         ← TOOLS.md
+        ⑦ <available_skills>    ← 匹配到的技能（如有）
+        ⑧ <available_tools>     ← 工具声明（如有）
+        ⑨ <context>             ← 记忆检索结果（如有）
+        ⑩ <safety_rules>        ← 硬编码安全规则
+        ⑪ <global_rules>        ← 硬编码行为规则
+            含: 侦察/反问/编辑策略/编码验证/自纠错/执行报告规则
+        所有用户文本经 _sanitize() 转义危险标签
 ```
 
 ### 阶段 3：增强注入
 
 ```
-agent.py:251  enhanced_prompt = self._build_enhanced_prompt(
-                  base_system_prompt, user_message, first_round=True
-              )
-              └─ agent.py:875  _build_enhanced_prompt()
-                  parts = [base_prompt]
-                  │
-                  ├─ ① 工作记忆: wm.to_prompt()
-                  │     → 计划进度 / 已尝试方法 / 排除方向 / 发现 / 错误 / 验证失败
-                  │
-                  ├─ ② 首轮 (first_round=True):
-                  │   ├─ checkpoint_mgr.load_latest(max_age_hours=1) → 续跑或跳过
-                  │   ├─ _recon_prompt(user_message)
-                  │   │   → CWD + "先侦察再动手" + 模糊反问检测
-                  │   ├─ _coding_cadence_prompt() → "小步快跑"编码节拍
-                  │   └─ wm.get_planning_prompt() → JSON 计划模板
-                  │
-                  └─ ③ 非首轮 (first_round=False):
-                      ├─ needs_full_rewrite() → 逐行修补死循环检测
-                      ├─ _coding_guard_from_memory() → 编译检查注入
-                      ├─ _regression_guard() → 全量回归检查
-                      └─ error_kb.lookup_by_confidence() → 已知修复建议
+Agent.chat() 内, prompt 构建之后:
 
-agent.py:254  self.working_memory.clear()
-agent.py:257  user_msg = Message(role=USER, content=user_message)
-agent.py:259  full_messages = prompt_builder.build_messages(history+[user_msg], ...)
+  enhanced_prompt = self._build_enhanced_prompt(
+      base_system_prompt, user_message, first_round=True
+  )
+    └─ → Agent._build_enhanced_prompt()
+        parts = [base_prompt]
+        │
+        ├─ ① 工作记忆: wm.to_prompt()
+        │     → 计划进度 / 已尝试方法 / 排除方向 / 发现 / 错误 / 验证失败
+        │
+        ├─ ② 首轮 (first_round=True):
+        │   ├─ checkpoint_mgr.load_latest(max_age_hours=1) → 续跑或跳过
+        │   ├─ _recon_prompt(user_message)
+        │   │   → CWD + "先侦察再动手" + 模糊反问检测
+        │   ├─ _coding_cadence_prompt() → "小步快跑"编码节拍
+        │   └─ wm.get_planning_prompt() → JSON 计划模板
+        │
+        └─ ③ 非首轮 (first_round=False):
+            ├─ needs_full_rewrite() → 逐行修补死循环检测
+            ├─ _coding_guard_from_memory() → 编译检查注入
+            ├─ _regression_guard() → 全量回归检查
+            └─ error_kb.lookup_by_confidence() → 已知修复建议
+
+  self.working_memory.clear()  → 紧跟 _build_enhanced_prompt 之后
+  user_msg = Message(role=USER, content=user_message)
+  full_messages = prompt_builder.build_messages(history+[user_msg], ...)
 ```
 
 ### 阶段 4：LLM 推理循环（max 50 轮）
 
 ```
-agent.py:276  for round_num in range(max_rounds):  ← 前有 max_rounds=50 等变量初始化
+Agent.chat() 内, for round_num in range(max_rounds):   ← 循环在变量初始化之后
 
   ┌─ 停止条件 ─────────────────────────────────────
   │ if len(all_tool_results) >= 100:  break   ← 100次工具调用上限
@@ -149,11 +155,11 @@ agent.py:276  for round_num in range(max_rounds):  ← 前有 max_rounds=50 等�
   │
   ├─ LLM 调用 ────────────────────────────────────
   │ response = self.llm.chat(messages, tools, system_prompt=live_prompt, ...)
-  │   └─ llm/registry.py:88  AdapterRegistry.chat()
+  │   └─ → llm/registry/AdapterRegistry.chat()
   │       ├─ adapter = get(provider)     ← 按 "provider:model" 缓存
   │       ├─ rl = _get_rate_limiter()    ← 令牌桶限流
   │       └─ adapter.chat()
-  │           └─ llm/deepseek.py:48  DeepSeekAdapter.chat()
+  │           └─ → llm/deepseek/DeepSeekAdapter.chat()
   │               ├─ POST https://api.deepseek.com/v1/chat/completions
   │               ├─ 3次重试，指数退避 2^attempt 秒
   │               └─ 返回 LLMResponse(content, tool_calls, finish_reason,
@@ -162,12 +168,12 @@ agent.py:276  for round_num in range(max_rounds):  ← 前有 max_rounds=50 等�
   ├─ 无工具调用时 ────────────────────────────────
   │ finish_reason=="length" → "请继续。" → continue
   │ finish_reason=="error"  → sleep 1.5s → continue
-  │ 其他 → break (任务完成)
+  │ 其他 → 累积 content → break (任务完成)
   │
   ├─ 工具执行 ────────────────────────────────────
-  │ agent.py:331  for tc in response.tool_calls:
+  │ for tc in response.tool_calls:   ← LLM 调用之后
   │   tr = await _execute_tool(tc, session_id)
-  │   └─ agent.py:1062  _execute_tool()
+  │   └─ → Agent._execute_tool()
   │       ├─ ToolRegistry.get(tc.name)
   │       ├─ ToolGuardrails.check_tool_call(name, args, risk)
   │       │   ├─ 注入检测: 扫描 <system_reminder> 等 20+ 模式
@@ -187,7 +193,7 @@ agent.py:276  for round_num in range(max_rounds):  ← 前有 max_rounds=50 等�
   │
   ├─ 更新工作记忆 ────────────────────────────────
   │ _update_working_memory(response.content, round_results, user_message)
-  │   └─ agent.py:957
+  │   └─ → Agent._update_working_memory()
   │       ├─ ExecutionPlan.parse_from_text() → JSON 计划解析
   │       ├─ 每个 ToolResult:
   │       │   ├─ wm.record_attempt()
@@ -211,36 +217,40 @@ agent.py:276  for round_num in range(max_rounds):  ← 前有 max_rounds=50 等�
 ### 阶段 5：后处理
 
 ```
-agent.py:372  report = _build_task_report(task, rounds, results, ...)
-              → "✅ 成功 / ⚠️ 部分完成 / ❌ 失败 / 🛑 达到上限"
+Agent.chat() 内, 循环结束后:
 
-agent.py:381  sessions.add_message()  → 会话历史持久化
+  report = _build_task_report(task, rounds, results, ...)  → 循环后首行
+    → "✅ 成功 / ⚠️ 部分完成 / ❌ 失败 / 🛑 达到上限"
 
-agent.py:386  memory.observe_action()         ← L4 预测记忆学习
-agent.py:387  memory.store_conversation()     ← L3 FTS5 存储
-agent.py:389  memory.remember(FROZEN)         ← L1 冻结快照
+  sessions.add_message()  → 逐个保存本轮新消息
 
-agent.py:392  if auto_generate: _learn_from_task()
-              → 构建 trace → procedural.create_from_trace()
-              → GEPAEngine.evolve()（如启用）
+  memory.observe_action()         ← L4 预测记忆学习
+  memory.store_conversation()     ← L3 FTS5 存储
+  memory.remember(FROZEN)         ← L1 冻结快照
 
-agent.py:396  if success: checkpoint_mgr.mark_complete(sid)
-              else: _save_checkpoint(sid, task)
+  if auto_generate: _learn_from_task()  → 紧接着记忆写入之后
+    → 构建 trace → procedural.create_from_trace()
+    → GEPAEngine.evolve()（如启用）
 
-agent.py:402  error_kb.save()         ← 持久化错误知识库
+  if consecutive_fails < 5: checkpoint_mgr.mark_complete(sid)  → 紧接着技能学习之后
+  else: _save_checkpoint(sid, task)
 
-agent.py:404  sessions.update_state(sid, IDLE)
+  error_kb.save()         ← 持久化错误知识库
 
-agent.py:414  finally: lane_queue.mark_done(sid)  ← 释放 GlobalLane (实际 L416)
+  sessions.update_state(sid, IDLE)
+  return final_content
+
+  finally: lane_queue.mark_done(sid)  ← finally 块末尾,释放 GlobalLane
 ```
 
 ### 阶段 6：流式变体（chat_stream vs chat）
 
+chat_stream() 的整体结构与 chat() 相同，差异仅在:
+
 | 步骤 | chat() | chat_stream() |
 |------|--------|---------------|
-| agent.py:428 | — | `lane_queue.track_active(sid)` |
+| Steer 注入 | — | `lane_queue.track_active(sid)` + `register_steer_callback(sid, cb)` |
 | 状态 | THINKING | STREAMING |
-| Steer | — | `register_steer_callback(sid, cb)` |
 | LLM调用 | `llm.chat()` → LLMResponse | `llm.chat_stream()` → AsyncIterator |
 | 工具结果 | 不输出 | `yield StreamChunk(tool_result=tr)` |
 | 释放 | `mark_done()` | `untrack_active()` + `mark_done()` |
@@ -251,7 +261,7 @@ agent.py:414  finally: lane_queue.mark_done(sid)  ← 释放 GlobalLane (实际 
 
 ### 用户输入
 
-在终端输入 `deepsoul chat "你好"`。cli.py 第 74-87 行，检测到 message 参数非空，走单次消息模式。
+在终端输入 `deepsoul chat "你好"`。cli.py `chat` 命令检测到 message 参数非空，走单次消息模式（调用 `agent.chat_stream()` 而 `stream=True`）。
 
 ### ① 入队——几乎没有等待
 
@@ -270,9 +280,9 @@ Agent 调用 `memory.query_for_prompt("你好")`：
 
 ### ③ Prompt 组装——11 段 XML 拼接
 
-`PromptBuilder.build_system_prompt(matched_skills=[], tools=工具声明, extra_context="")` 跑完 11 段：
+`PromptBuilder.build_system_prompt(matched_skills=[], tools=工具声明, extra_context="")` 跑完 11 段。
 
-SOUL.md → AGENTS.md → TOOLS.md → 工具声明 → 安全规则 → 200+ 行全局行为规则。全局规则里有一条："对话/问候直接文字回复，不要调工具"。
+全局规则里有一条："对话/问候直接文字回复，不要调工具"。
 
 组出大约 3000 token 的 system prompt。首次调用触发快照冻结，后续调用读冻结内容保护 prefix cache。
 
@@ -290,11 +300,7 @@ SOUL.md → AGENTS.md → TOOLS.md → 工具声明 → 安全规则 → 200+ �
 
 ### ⑤ LLM 推理——0 个工具调用
 
-请求体约 4000 token，POST 到 DeepSeek API。返回：
-
-```json
-{"choices":[{"message":{"content":"你好！有什么可以帮你的吗？"},"finish_reason":"stop"}]}
-```
+请求体约 4000 token，POST 到 DeepSeek API。返回 `{"choices":[{"message":{"content":"你好！有什么可以帮你的吗？"},"finish_reason":"stop"}]}`。
 
 `response.tool_calls` 是空的，`finish_reason` 是 `"stop"`。第一轮就 break 出循环了。
 
