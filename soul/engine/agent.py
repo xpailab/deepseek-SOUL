@@ -784,8 +784,10 @@ class Agent:
         if wm_text:
             parts.append(wm_text)
 
-        # 首轮：侦察指令 + 检查点续跑或规划
+        # 首轮：注入首轮专用规则 + 侦察指令 + 检查点续跑或规划
         if first_round:
+            # 首轮专用规则（侦察/反问/编辑策略）——从 builder 注入
+            parts.append(self.prompt_builder._first_round_injection())
             if wm.execution_plan.is_empty():
                 cp = self.checkpoint_mgr.load_latest(max_age_hours=1)
                 if cp:
