@@ -1,9 +1,10 @@
 # DeepSoul — 下一代自我进化 AI Agent 框架
 
-DeepSoul 是一个**越用越聪明**的 AI Agent —— 它能操控电脑、写代码、管项目、跑定时任务，并从每次任务中学习、自我改进。
-
-> 核心推理由 [deepseek-v4-pro](https://platform.deepseek.com) 驱动 (98%)，多模态理解由 [kimi-k2.5](https://platform.moonshot.cn) 辅助 (2%)。  
+> **本项目 99% 以上由 [deepseek-v4-pro](https://platform.deepseek.com) 构建。**  
+> 创建初衷是验证 DeepSeek v4 能否自主构建一个媲美 OpenClaw 的生产级 Agent 框架。结论是**完全没有问题**——v4 的编码能力确实一流，配合其定价策略，整个项目耗时约两周（主要是周末），**总成本不到 50 元人民币**。  
 > [English →](README.md)
+
+DeepSoul 是一个**越用越聪明**的 AI Agent —— 它能操控电脑、写代码、管项目、跑定时任务，并从每次任务中学习、自我改进。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
