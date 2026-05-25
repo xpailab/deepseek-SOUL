@@ -134,7 +134,7 @@ agent.py:259  full_messages = prompt_builder.build_messages(history+[user_msg], 
 ### 阶段 4：LLM 推理循环（max 50 轮）
 
 ```
-agent.py:266  for round_num in range(50):
+agent.py:276  for round_num in range(max_rounds):  ← 前有 max_rounds=50 等变量初始化
 
   ┌─ 停止条件 ─────────────────────────────────────
   │ if len(all_tool_results) >= 100:  break   ← 100次工具调用上限
@@ -187,7 +187,7 @@ agent.py:266  for round_num in range(50):
   │
   ├─ 更新工作记忆 ────────────────────────────────
   │ _update_working_memory(response.content, round_results, user_message)
-  │   └─ agent.py:961
+  │   └─ agent.py:957
   │       ├─ ExecutionPlan.parse_from_text() → JSON 计划解析
   │       ├─ 每个 ToolResult:
   │       │   ├─ wm.record_attempt()
@@ -214,7 +214,7 @@ agent.py:266  for round_num in range(50):
 agent.py:372  report = _build_task_report(task, rounds, results, ...)
               → "✅ 成功 / ⚠️ 部分完成 / ❌ 失败 / 🛑 达到上限"
 
-agent.py:380  sessions.add_message()  → 会话历史持久化
+agent.py:381  sessions.add_message()  → 会话历史持久化
 
 agent.py:386  memory.observe_action()         ← L4 预测记忆学习
 agent.py:387  memory.store_conversation()     ← L3 FTS5 存储
@@ -231,7 +231,7 @@ agent.py:402  error_kb.save()         ← 持久化错误知识库
 
 agent.py:404  sessions.update_state(sid, IDLE)
 
-agent.py:410  finally: lane_queue.mark_done(sid)  ← 释放 GlobalLane
+agent.py:414  finally: lane_queue.mark_done(sid)  ← 释放 GlobalLane (实际 L416)
 ```
 
 ### 阶段 6：流式变体（chat_stream vs chat）
