@@ -15,7 +15,6 @@ from soul.memory.predictive import PredictiveMemory
 from soul.memory.procedural import ProceduralMemory
 from soul.types import MemoryConfig, MemoryEntry, MemoryLayer, Message, MessageRole
 
-
 # ============================================================
 # Layer 1: FrozenMemory 测试
 # ============================================================

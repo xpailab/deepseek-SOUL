@@ -17,7 +17,6 @@ from soul.types import (
     MessageRole,
     SandboxMode,
     SessionState,
-    StreamChunk,
 )
 
 

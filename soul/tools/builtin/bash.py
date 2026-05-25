@@ -150,7 +150,7 @@ class BashTool:
 
             return result
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "exit_code": -1,
                 "stdout": "",

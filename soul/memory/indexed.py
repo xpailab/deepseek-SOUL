@@ -15,12 +15,13 @@ import json
 import re
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 import aiosqlite
 
-from soul.types import MemoryEntry, MemoryLayer, MessageRole
+from soul.types import MemoryEntry, MemoryLayer
 
 # ---------------------------------------------------------------------------
 # jieba 延迟加载 — 纯 Python 中文分词，约 500KB，零 C 依赖
@@ -462,7 +463,7 @@ class IndexedMemory:
             terms = [t for t in terms if t and t != query]
             # 原始查询 + LLM 扩展
             return [query] + terms[:5]
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             return self._expand_query_fallback(query)
 
     async def _llm_rerank(
@@ -503,7 +504,7 @@ class IndexedMemory:
                     continue
             if indices:
                 return [results[i] for i in indices if i < len(results)][:top_k]
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             pass
 
         return results[:top_k]

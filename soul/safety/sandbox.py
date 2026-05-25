@@ -114,7 +114,7 @@ class Sandbox:
                 "mode": "local",
                 "cwd": cwd,
             }
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "exit_code": -1,
                 "stdout": "",

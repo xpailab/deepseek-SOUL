@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 from soul.tools.classifier import ResultClassifier
@@ -11,7 +9,6 @@ from soul.tools.guardrails import ToolGuardrails
 from soul.tools.registry import ToolDef, ToolRegistry
 from soul.tools.retry import RateLimitTracker, RetryManager
 from soul.types import ToolRisk
-
 
 # ============================================================
 # ToolDef

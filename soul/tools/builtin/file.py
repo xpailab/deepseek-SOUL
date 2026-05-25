@@ -101,7 +101,7 @@ class FileTool:
         if path.is_dir():
             return {"error": f"路径是目录: {path}", "success": False}
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
 
         total_lines = len(lines)

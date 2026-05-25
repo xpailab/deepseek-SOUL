@@ -14,8 +14,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from soul.types import AgentState
-
 
 class SessionSync:
     """跨进程会话同步。

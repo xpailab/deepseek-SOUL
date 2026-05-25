@@ -48,7 +48,7 @@ triggers: test, 测试
 class TestSkillRegistry:
     def test_register_and_search(self):
         from soul.skills.registry import SkillRegistry
-        from soul.types import Skill, SkillMeta, SkillType
+        from soul.types import Skill, SkillMeta
 
         reg = SkillRegistry()
         skill = Skill(

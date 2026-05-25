@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -16,7 +15,6 @@ from soul.types import (
     SkillConfig,
     SOULConfig,
 )
-
 
 # ============================================================
 # Test 1: CLI chat — 完整对话流程
@@ -170,8 +168,8 @@ async def test_04_cli_status(mock_register):
 @pytest.mark.asyncio
 async def test_05_gateway_rest():
     """POST /api/chat — 测试 REST API 路由注册。"""
-    from soul.gateway.server import Gateway, CHAT_PAGE
     from soul.gateway.router import ChannelMessage
+    from soul.gateway.server import CHAT_PAGE, Gateway
     from soul.types import GatewayConfig
 
     gw = Gateway(GatewayConfig(port=18789))
@@ -194,7 +192,7 @@ async def test_05_gateway_rest():
 @pytest.mark.asyncio
 async def test_06_gateway_websocket():
     """WS /ws/chat — 测试 WebSocket 路由。"""
-    from soul.gateway.server import Gateway, CHAT_PAGE
+    from soul.gateway.server import CHAT_PAGE, Gateway
     from soul.types import GatewayConfig
 
     gw = Gateway(GatewayConfig(port=18789))
@@ -211,8 +209,8 @@ async def test_06_gateway_websocket():
 @pytest.mark.asyncio
 async def test_07_gateway_full():
     """网关完整验证: 路由 + 会话 + 消息处理。"""
-    from soul.gateway.server import Gateway, CHAT_PAGE
-    from soul.gateway.router import MessageRouter, ChannelMessage
+    from soul.gateway.router import ChannelMessage
+    from soul.gateway.server import CHAT_PAGE, Gateway
     from soul.types import GatewayConfig
 
     gw = Gateway(GatewayConfig(port=18789))
@@ -274,7 +272,7 @@ async def test_08_qq_connector():
 @pytest.mark.asyncio
 async def test_09_wechat_dingtalk():
     """微信 + 钉钉: 全模式消息构建。"""
-    from soul.gateway.connectors import WeChatConnector, DingTalkConnector
+    from soul.gateway.connectors import DingTalkConnector, WeChatConnector
 
     # ── 微信 ──
     wx_mp = WeChatConnector(app_id="wxTEST", app_secret="test", mode="mp")
@@ -351,11 +349,14 @@ async def test_10_feishu_telegram():
 @pytest.mark.asyncio
 async def test_cross_platform_summary():
     """跨平台统一: 所有连接器通过 SessionSync 统一管理。"""
-    from soul.gateway.session_sync import SessionSync, PlatformConnector
     from soul.gateway.connectors import (
-        QQConnector, WeChatConnector, DingTalkConnector,
-        FeishuConnector, TelegramConnector,
+        DingTalkConnector,
+        FeishuConnector,
+        QQConnector,
+        TelegramConnector,
+        WeChatConnector,
     )
+    from soul.gateway.session_sync import PlatformConnector, SessionSync
 
     tmp = tempfile.mkdtemp(prefix="soul_sync_test_")
     sync = SessionSync(str(Path(tmp) / "sessions"))

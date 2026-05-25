@@ -37,10 +37,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import defaultdict
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from soul.types import LaneConfig, QueueMode
 
@@ -381,7 +380,7 @@ class LaneQueue:
             else:
                 self.global_lane.release()
                 return None
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.global_lane.release()
             return None
 

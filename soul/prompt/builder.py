@@ -25,11 +25,8 @@ from soul.memory.frozen import FrozenMemory
 from soul.prompt.compressor import ContextCompressor
 from soul.types import (
     Message,
-    MessageRole,
     Skill,
-    ToolRisk,
 )
-
 
 # 默认 Prompt 文件
 PROMPT_FILES = [

@@ -155,10 +155,10 @@ class SkillGenerator:
         lines = [
             f"# {name}",
             "",
-            f"## 描述",
+            "## 描述",
             description,
             "",
-            f"## 执行步骤",
+            "## 执行步骤",
         ]
 
         for step in analysis.get("pattern", []):

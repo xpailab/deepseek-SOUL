@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from soul.engine.agent import Agent
 
 
@@ -95,7 +93,7 @@ class TestRegressionGuard:
         assert guard == ""
 
     def test_not_triggered_early(self):
-        from soul.engine.working_memory import WorkingMemory, ExecutionPlan, PlanStep
+        from soul.engine.working_memory import ExecutionPlan, PlanStep, WorkingMemory
         agent = Agent.__new__(Agent)
         agent.working_memory = WorkingMemory()
         plan = ExecutionPlan(task="test")
@@ -112,7 +110,7 @@ class TestRegressionGuard:
         assert guard == ""  # 1/5 < 80%
 
     def test_triggered_near_completion(self):
-        from soul.engine.working_memory import WorkingMemory, ExecutionPlan, PlanStep
+        from soul.engine.working_memory import ExecutionPlan, PlanStep, WorkingMemory
         agent = Agent.__new__(Agent)
         agent.working_memory = WorkingMemory()
         plan = ExecutionPlan(task="test")
@@ -131,7 +129,7 @@ class TestRegressionGuard:
         assert "测试" in guard or "test" in guard.lower()
 
     def test_triggered_only_once(self):
-        from soul.engine.working_memory import WorkingMemory, ExecutionPlan, PlanStep
+        from soul.engine.working_memory import ExecutionPlan, PlanStep, WorkingMemory
         agent = Agent.__new__(Agent)
         agent.working_memory = WorkingMemory()
         plan = ExecutionPlan(task="test")

@@ -25,7 +25,7 @@ class ConfigManager:
     加载优先级：默认值 → 配置文件 → 环境变量 SOUL_* → 运行时覆盖
     """
 
-    _instance: "ConfigManager | None" = None
+    _instance: ConfigManager | None = None
 
     def __init__(self, config_path: str | None = None):
         self._config_path = Path(config_path) if config_path else self._default_path()
@@ -35,7 +35,7 @@ class ConfigManager:
         self._loaded = False
 
     @classmethod
-    def get_instance(cls) -> "ConfigManager":
+    def get_instance(cls) -> ConfigManager:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -59,7 +59,7 @@ class ConfigManager:
 
         if self._config_path.exists():
             try:
-                with open(self._config_path, "r", encoding="utf-8") as f:
+                with open(self._config_path, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 self._config = SOULConfig(**data)
             except Exception:

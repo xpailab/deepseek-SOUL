@@ -13,7 +13,7 @@ from soul.llm.base import BaseAdapter, LLMResponse
 from soul.llm.claude import ClaudeAdapter
 from soul.llm.deepseek import DeepSeekAdapter
 from soul.llm.openai import OpenAIAdapter
-from soul.types import LLMConfig, Message, StreamChunk
+from soul.types import LLMConfig, Message
 
 
 class RateLimiter:

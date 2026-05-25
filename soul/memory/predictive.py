@@ -19,8 +19,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from soul.types import MemoryEntry, MemoryLayer
-
 
 class PredictiveMemory:
     """预测记忆 — 第四层（SOUL 创新）。
@@ -340,10 +338,10 @@ class PredictiveMemory:
         """生成自动化建议。"""
         count = data["count"]
         if count >= 20:
-            return f"建议将此流程设为 cron 定时任务，自动执行"
+            return "建议将此流程设为 cron 定时任务，自动执行"
         elif count >= 10:
-            return f"建议创建快捷命令或别名简化此操作"
+            return "建议创建快捷命令或别名简化此操作"
         elif count >= 5:
-            return f"可以考虑创建技能模板加速此流程"
+            return "可以考虑创建技能模板加速此流程"
         else:
-            return f"继续观察，积累更多数据后给出建议"
+            return "继续观察，积累更多数据后给出建议"

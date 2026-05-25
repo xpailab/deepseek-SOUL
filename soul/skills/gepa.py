@@ -23,14 +23,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from soul.types import Skill, SkillMeta
+from soul.types import Skill
 
 
 @dataclass

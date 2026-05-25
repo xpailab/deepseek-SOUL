@@ -229,7 +229,7 @@ class TaskStagePlanner:
                 total_estimated_tools=data.get("total_estimated_tools", sum(s.estimated_tools for s in stages)),
             )
 
-        except Exception as e:
+        except Exception:
             # 规划失败，创建简单的单阶段计划
             return TaskPlan(
                 original_task=task,

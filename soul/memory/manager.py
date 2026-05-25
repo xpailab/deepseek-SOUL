@@ -6,16 +6,15 @@
 
 from __future__ import annotations
 
-import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
 
 from soul.memory.frozen import FrozenMemory
 from soul.memory.indexed import IndexedMemory
 from soul.memory.predictive import PredictiveMemory
 from soul.memory.procedural import ProceduralMemory
 from soul.memory.user_model import UserModel
-from pathlib import Path
-
 from soul.types import (
     MemoryConfig,
     MemoryEntry,
@@ -46,7 +45,7 @@ class MemoryManager:
         self.peers = self.user_model.peers  # 快捷访问
         self._initialized = False
 
-    def set_llm(self, llm: "Callable[[str], Awaitable[str]]") -> None:
+    def set_llm(self, llm: Callable[[str], Awaitable[str]]) -> None:
         """注入 LLM 回调，启用 Layer 3 的动态查询扩展和语义重排。
 
         llm 签名: async def llm(prompt: str) -> str

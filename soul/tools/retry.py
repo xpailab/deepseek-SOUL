@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 
 class RateLimitTracker:
@@ -98,7 +99,7 @@ class RetryManager:
                 result = await func(*args, **kwargs)
                 return result, None, attempt
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_error = f"{tool_name}: 执行超时"
                 if attempt < self.max_retries:
                     delay = self._calc_delay(attempt)

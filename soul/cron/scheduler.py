@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from croniter import croniter
 
@@ -139,7 +140,7 @@ class CronScheduler:
                     cron = croniter(task.cron_expr, task.last_run)
                     task.next_run = cron.get_next(start_time=task.last_run)
 
-            except Exception as e:
+            except Exception:
                 task.error_count += 1
                 # 错误时仍然计算下次运行时间
                 if task.cron_expr:

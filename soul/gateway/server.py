@@ -52,12 +52,12 @@ class Gateway:
         host = host or self.config.host
         port = port or self.config.port
         self._tasks.append(asyncio.create_task(self._serve(host, port)))
-        print(f"\n  DeepSoul Gateway 已启动")
+        print("\n  DeepSoul Gateway 已启动")
         display_host = "localhost" if host in ("0.0.0.0", "::", "") else host
         print(f"  ├─ Web 界面: http://{display_host}:{port}")
         print(f"  ├─ API 文档: http://{display_host}:{port}/docs")
         print(f"  └─ 健康检查: http://{display_host}:{port}/health")
-        print(f"\n  按 Ctrl+C 停止\n")
+        print("\n  按 Ctrl+C 停止\n")
         self.router.register_handler("cli", self._handle_cli_message)
 
     async def stop(self):

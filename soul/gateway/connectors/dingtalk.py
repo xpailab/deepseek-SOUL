@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
@@ -136,7 +135,6 @@ class DingTalkConnector(PlatformConnector):
             }
 
         try:
-            import json as _json
             resp = await self._http.post(self.webhook_url, json=payload)
             data = resp.json()
             return str(data.get("errcode", -1))

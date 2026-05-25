@@ -6,9 +6,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from soul.types import Skill, SkillMeta, SkillType
+from soul.types import Skill, SkillMeta
 
 
 class TestPromptBuilder:

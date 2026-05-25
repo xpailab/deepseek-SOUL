@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -29,14 +28,12 @@ if sys.platform == "win32":
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
-from soul.engine.agent import Agent
 from soul.config.manager import ConfigManager
+from soul.engine.agent import Agent
 
 app = typer.Typer(
     name="deepsoul",
@@ -52,7 +49,7 @@ console = Console()
 
 @app.command()
 def chat(
-    message: Optional[str] = typer.Argument(None, help="直接发送的消息"),
+    message: str | None = typer.Argument(None, help="直接发送的消息"),
     session: str = typer.Option("", "--session", "-s", help="会话 ID"),
     model: str = typer.Option("", "--model", "-m", help="模型名称"),
     stream: bool = typer.Option(True, "--stream/--no-stream", help="流式输出"),
@@ -190,8 +187,8 @@ def run(
 
 @app.command()
 def config(
-    key: Optional[str] = typer.Argument(None, help="配置键（如 llm.model）"),
-    value: Optional[str] = typer.Argument(None, help="配置值"),
+    key: str | None = typer.Argument(None, help="配置键（如 llm.model）"),
+    value: str | None = typer.Argument(None, help="配置值"),
     show_all: bool = typer.Option(False, "--all", "-a", help="显示所有配置"),
     edit: bool = typer.Option(False, "--edit", "-e", help="编辑配置文件"),
 ):
@@ -252,8 +249,8 @@ def gateway(
     """启动消息网关（含 REST API + WebSocket + Web 聊天界面）。"""
 
     async def _run():
-        from soul.gateway.server import Gateway
         from soul.engine.agent import Agent
+        from soul.gateway.server import Gateway
         cfg_mgr = ConfigManager()
         config = cfg_mgr.load()
         config.gateway.port = port
@@ -395,7 +392,7 @@ def train(
             while True:
                 yield random.choice(tasks)
 
-        console.print(f"[bold]开始生成轨迹[/bold]")
+        console.print("[bold]开始生成轨迹[/bold]")
         console.print(f"  任务数: {len(tasks)}")
         console.print(f"  目标轨迹数: {count}")
         console.print(f"  工作进程: {workers}")

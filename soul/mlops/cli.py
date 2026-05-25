@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -34,9 +33,9 @@ def generate(
     format: str = typer.Option("sharegpt", "--format", "-f"),
 ):
     """批量生成训练轨迹。"""
-    from soul.mlops.trajectory import TrajectoryGenerator
-    from soul.engine.agent import Agent
     from soul.config.manager import ConfigManager
+    from soul.engine.agent import Agent
+    from soul.mlops.trajectory import TrajectoryGenerator
     from soul.types import MLOpsConfig
 
     tasks_path = Path(tasks_file).expanduser()

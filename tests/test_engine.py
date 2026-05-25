@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from pathlib import Path
 
 import pytest
 
-from soul.types import LLMConfig, MemoryConfig, SkillConfig, SOULConfig, QueueMode
+from soul.types import QueueMode
 
 
 class TestLaneQueue:
     def test_init(self):
-        from soul.types import LaneConfig
         from soul.engine.lane_queue import LaneQueue
+        from soul.types import LaneConfig
         lq = LaneQueue(LaneConfig(max_concurrent=4))
         assert lq is not None
         stats = lq.get_stats()
@@ -22,8 +21,8 @@ class TestLaneQueue:
         assert "sessions" in stats
 
     def test_enqueue_dequeue(self):
-        from soul.types import LaneConfig
         from soul.engine.lane_queue import LaneQueue, QueueItem
+        from soul.types import LaneConfig
         lq = LaneQueue(LaneConfig(max_concurrent=4))
         item = QueueItem(id="msg_1", session_id="s1", prompt="test", mode=QueueMode.QUEUE)
         assert item.session_id == "s1"

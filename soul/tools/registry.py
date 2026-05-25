@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from soul.types import ToolRisk
-
 
 # 工具回调类型
 ToolHandler = Callable[..., Coroutine[Any, Any, Any]]

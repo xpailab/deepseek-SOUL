@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import sys
 from pathlib import Path
-from typing import Any
 
 import typer
 
@@ -88,7 +85,7 @@ def simulate(
     steps: int = typer.Option(5, help="最大步数"),
 ) -> None:
     """模拟一次 RL episode（不调用真实 LLM）。"""
-    from soul.environments.atropos import AtroposEnv, AtroposConfig
+    from soul.environments.atropos import AtroposConfig, AtroposEnv
 
     config = AtroposConfig(max_steps=steps)
     env = AtroposEnv(config)

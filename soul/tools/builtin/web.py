@@ -225,8 +225,8 @@ class WebTool:
         if not resp.is_success:
             return {"success": False, "results": []}
 
-        from html.parser import HTMLParser
         import re as _re
+        from html.parser import HTMLParser
 
         class DDGParser(HTMLParser):
             def __init__(self):

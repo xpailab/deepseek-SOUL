@@ -9,7 +9,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from soul.types import MLOpsConfig, Trajectory, TrajectoryStep
 
@@ -89,7 +89,7 @@ class TrajectoryGenerator:
                         # 定期保存检查点
                         if self._generated % 10 == 0:
                             self._save_checkpoint(generated_trajs)
-                except Exception as e:
+                except Exception:
                     self._errors += 1
                 finally:
                     task_queue.task_done()

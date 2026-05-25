@@ -13,11 +13,10 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from soul.types import Message, MessageRole, StreamChunk
-
+from soul.types import Message, MessageRole
 
 # 不同策略的系统提示
 APPROACHES = [

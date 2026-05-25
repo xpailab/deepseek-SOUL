@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from soul.engine.working_memory import ExecutionPlan, PlanStep, WorkingMemory
 
 
