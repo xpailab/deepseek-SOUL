@@ -580,16 +580,22 @@ class Agent:
     def _is_vague_task(text: str) -> bool:
         """检测任务是否过于模糊——需要反问澄清。"""
         t = text.strip()
+
+        # 短确认/回复 → 不反问，由对话历史决定
+        confirmations = ["需要", "好的", "好", "行", "可以", "是的", "对", "嗯", "是",
+                         "yes", "ok", "yeah", "yep", "sure", "继续", "修复", "开始",
+                         "确认", "没问题", "就这样", "搞", "干", "做", "改", "要"]
+        if any(t == c for c in confirmations):
+            return False
+
         vague_patterns = ["优化", "改一下", "修一下", "有问题", "不行", "报错", "慢了", "帮我看看"]
         has_specific = any(
             kw in t.lower() for kw in [".py", ".js", ".go", ".ts", "/", "\\", "error",
                 "traceback", "log", "日志", "文件", "目录", "端口", "bug", "异常"]
         )
         is_vague = any(p in t for p in vague_patterns)
-        # 短 + 无具体信息 + 包含模糊词 → 需要反问
         if len(t) < 25 and not has_specific and is_vague:
             return True
-        # 有模糊词但无具体信息 → 需要反问
         return is_vague and not has_specific
 
     def _recon_prompt(self, task: str) -> str:
@@ -608,7 +614,10 @@ class Agent:
         )
 
         lines.append("\n## 当前阶段: 侦察与理解")
-        if ambiguous:
+        # 短确认（非模糊）→ 跳过侦察，直接查对话历史
+        if len(task.strip()) <= 10 and not ambiguous:
+            lines.append("用户消息很短——这可能是在回复你上一轮的提问。不要从头侦察，先看**对话历史中你最后说了什么**，然后直接执行。")
+        elif ambiguous:
             lines.append("⚠️ 用户的任务描述比较模糊——先回顾对话历史，如果上文已明确则直接回答，不要反问。")
         else:
             lines.append("在制定计划之前，先用 1-2 个只读工具快速摸底。")
