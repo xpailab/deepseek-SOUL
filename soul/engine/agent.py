@@ -263,9 +263,10 @@ class Agent:
                 await self.sessions.update_state(session_id, AgentState.EXECUTING)
 
                 # 每轮注入最新工作记忆
-                live_prompt = self._build_enhanced_prompt(
+                live_static, live_dynamic = self._build_enhanced_prompt(
                     base_system_prompt, user_message, first_round=False
                 )
+                live_prompt = live_static + "\n\n" + live_dynamic if live_dynamic else live_static
 
                 response = await self.llm.chat(
                     current_messages,
@@ -435,9 +436,10 @@ class Agent:
                 round_tool_calls: list[ToolCall] = []
                 last_finish = ""
 
-                live_prompt = self._build_enhanced_prompt(
+                live_static, live_dynamic = self._build_enhanced_prompt(
                     base_system_prompt, user_message, first_round=False
                 )
+                live_prompt = live_static + "\n\n" + live_dynamic if live_dynamic else live_static
 
                 async for chunk in self.llm.chat_stream(
                     current_messages,
@@ -808,31 +810,37 @@ class Agent:
     def _build_enhanced_prompt(
         self, base_prompt: str, user_message: str, first_round: bool,
         is_multi_turn: bool = False,
-    ) -> str:
-        """构建增强系统提示——注入工作记忆、错误知识库、检查点。"""
-        wm = self.working_memory
-        parts = [base_prompt]
+    ) -> tuple[str, str]:
+        """构建增强系统提示。
 
-        # 注入工作记忆上下文
+        Returns:
+            (static_system_prompt, dynamic_context)
+            - static_system_prompt: 不变部分，放 API 的 system prompt（prefix cache 友好）
+            - dynamic_context: 每轮变化的部分，作为额外 system 消息追加
+        """
+        wm = self.working_memory
+        static_parts = [base_prompt]
+        dynamic_parts: list[str] = []
+
+        # 动态层：工作记忆
         wm_text = wm.to_prompt()
         if wm_text:
-            parts.append(wm_text)
+            dynamic_parts.append(wm_text)
 
-        # 注入项目文件清单——提醒 Agent 已创建了哪些文件/接口
+        # 动态层：项目文件清单
         project_ctx = wm.get_project_context()
         if project_ctx:
-            parts.append(project_ctx)
+            dynamic_parts.append(project_ctx)
 
-        # 首轮：注入首轮专用规则 + 侦察指令 + 检查点续跑或规划
+        # 首轮：首轮专用内容放 dynamic（不污染 static cache）
         if first_round:
             if not is_multi_turn:
-                # 首轮专用规则（侦察/反问/编辑策略）——从 builder 注入
-                parts.append(self.prompt_builder._first_round_injection())
+                dynamic_parts.append(self.prompt_builder._first_round_injection())
             if wm.execution_plan.is_empty():
                 cp = self.checkpoint_mgr.load_latest(max_age_hours=1)
                 if cp:
                     resume_context = self.checkpoint_mgr.get_resume_context(cp)
-                    parts.append(resume_context)
+                    dynamic_parts.append(resume_context)
                     wm.execution_plan = ExecutionPlan(task=cp.task)
                     for s in cp.plan_steps:
                         from soul.engine.working_memory import PlanStep
@@ -849,52 +857,45 @@ class Agent:
                     for r in cp.ruled_out:
                         wm.rule_out(r)
                 elif not is_multi_turn:
-                    # 侦察阶段指令：动手前先看清楚（仅首轮）
-                    parts.append(self._recon_prompt(user_message, is_multi_turn=False))
-                    # 编码任务：注入小步快跑节拍
+                    dynamic_parts.append(self._recon_prompt(user_message, is_multi_turn=False))
                     coding_cadence = self._coding_cadence_prompt(user_message)
                     if coding_cadence:
-                        parts.append(coding_cadence)
-                    # 规划指令
-                    parts.append(wm.get_planning_prompt(user_message))
+                        dynamic_parts.append(coding_cadence)
+                    dynamic_parts.append(wm.get_planning_prompt(user_message))
 
-        # 逐行修补死循环检测：同一文件 3+ 次编辑仍失败 → 强制全文重写
+        # 非首轮：各种守卫和检查
         if not first_round:
             rewrite_file = wm.needs_full_rewrite()
             if rewrite_file:
-                parts.append(wm.get_rewrite_prompt(rewrite_file))
-
-        # 强制编码验证：上轮写了代码就注入检查指令
-        if not first_round:
+                dynamic_parts.append(wm.get_rewrite_prompt(rewrite_file))
             code_guard = self._coding_guard_from_memory()
             if code_guard:
-                parts.append(code_guard)
+                dynamic_parts.append(code_guard)
 
-        # 回归检查（任务快完成时注入）
         regression = self._regression_guard()
         if regression:
-            parts.append(regression)
+            dynamic_parts.append(regression)
 
-        # 错误知识库建议（当最近有失败时）
         last_err = wm.last_error()
         if last_err and not last_err.get("fix"):
             kb_entry = self.error_kb.lookup_by_confidence(
                 last_err["error"], min_confidence=0.5
             )
             if kb_entry:
-                parts.append(
+                dynamic_parts.append(
                     f"\n[知识库建议] 历史记录中相似的错误修复方案:\n"
                     f"  错误特征: {kb_entry.root_cause[:150]}\n"
                     f"  已知修复: {kb_entry.fix[:200]}\n"
                     f"  历史成功率: {kb_entry.confidence:.0%}"
                 )
 
-        # 连续失败：注入纠错指令
         correction = wm.get_correction_prompt()
         if correction:
-            parts.append(correction)
+            dynamic_parts.append(correction)
 
-        return "\n\n".join(parts)
+        static = "\n\n".join(static_parts)
+        dynamic = "\n\n".join(dynamic_parts) if dynamic_parts else ""
+        return static, dynamic
 
     def _update_working_memory(
         self,
@@ -1053,10 +1054,11 @@ class Agent:
             )
             if system_prompt:
                 base_system_prompt = base_system_prompt + "\n\n" + system_prompt
-            enhanced_prompt = self._build_enhanced_prompt(
+            enhanced_static, enhanced_dynamic = self._build_enhanced_prompt(
                 base_system_prompt, user_message, first_round=True,
                 is_multi_turn=False,
             )
+            enhanced_prompt = enhanced_static + "\n\n" + enhanced_dynamic if enhanced_dynamic else enhanced_static
             self.working_memory.clear()
 
         user_msg = Message(role=MessageRole.USER, content=user_message)
