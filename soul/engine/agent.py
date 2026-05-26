@@ -818,6 +818,11 @@ class Agent:
         if wm_text:
             parts.append(wm_text)
 
+        # 注入项目文件清单——提醒 Agent 已创建了哪些文件/接口
+        project_ctx = wm.get_project_context()
+        if project_ctx:
+            parts.append(project_ctx)
+
         # 首轮：注入首轮专用规则 + 侦察指令 + 检查点续跑或规划
         if first_round:
             if not is_multi_turn:
@@ -968,11 +973,15 @@ class Agent:
                         filepath = tr.result.get("path", tr.result.get("file_path", ""))
                     if filepath:
                         ext = filepath[filepath.rfind("."):].lower() if "." in filepath else ""
-                        if ext in (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".sh"):
+                        if ext in (".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".sh",
+                                   ".h", ".hpp", ".cxx", ".cc"):
                             wm.code_writes.append(filepath)
                             verify_prompt = self._build_verify_prompt(tr.name, filepath)
                             if verify_prompt:
                                 wm.add_finding(verify_prompt.strip())
+                        # 追踪项目文件——防止跨轮次 API 漂移
+                        if ext in (".h", ".hpp", ".cpp", ".c", ".py", ".go", ".rs"):
+                            wm.record_project_file(filepath, str(tr.result)[:300] if tr.result else "")
 
         # 标记计划步骤完成
         plan = wm.execution_plan

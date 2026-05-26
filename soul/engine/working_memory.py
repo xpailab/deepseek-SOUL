@@ -137,6 +137,7 @@ class WorkingMemory:
     error_patterns: list[dict[str, Any]] = field(default_factory=list)
     verifications: list[dict[str, Any]] = field(default_factory=list)
     code_writes: list[str] = field(default_factory=list)  # 本轮写入的代码文件路径
+    project_files: dict[str, str] = field(default_factory=dict)  # 已创建的文件→接口摘要
     execution_plan: ExecutionPlan = field(default_factory=ExecutionPlan)
     _diagnosis_count: int = 0
     _prompt_dirty: bool = True  # 缓存控制：内容变更时置 True
@@ -186,6 +187,31 @@ class WorkingMemory:
     def set_plan(self, plan: ExecutionPlan):
         self._prompt_dirty = True
         self.execution_plan = plan
+
+    def record_project_file(self, filepath: str, content_preview: str = ""):
+        """记录已创建的项目文件及其接口摘要——防止跨轮次 API 漂移。"""
+        # 提取关键接口信息（头文件中的 class/function 声明）
+        import re
+        summary = content_preview[:500] if content_preview else ""
+        if not summary and filepath.endswith((".h", ".hpp")):
+            # 只存前几行关键声明
+            summary = f"[头文件] {filepath}"
+        elif filepath.endswith(".cpp"):
+            summary = f"[源文件] {filepath}"
+        self.project_files[filepath] = summary
+        self._prompt_dirty = True
+
+    def get_project_context(self) -> str:
+        """生成项目文件清单——让 Agent 记住自己创建了什么。"""
+        if not self.project_files:
+            return ""
+        lines = ["## 已创建的项目文件（注意 API 一致性）"]
+        # 头文件优先
+        headers = [(fp, s) for fp, s in self.project_files.items() if fp.endswith((".h", ".hpp"))]
+        sources = [(fp, s) for fp, s in self.project_files.items() if not fp.endswith((".h", ".hpp"))]
+        for fp, summary in headers[-10:] + sources[-10:]:
+            lines.append(f"  - {fp}")
+        return "\n".join(lines)
 
     def record_edit_failure(self, filepath: str, error: str = ""):
         """追踪文件编辑失败次数——检测逐行修补死循环。"""
@@ -362,6 +388,7 @@ class WorkingMemory:
         self.error_patterns.clear()
         self.verifications.clear()
         self.code_writes.clear()
+        self.project_files.clear()
         self.execution_plan = ExecutionPlan()
         self._diagnosis_count = 0
         self._prompt_dirty = True
