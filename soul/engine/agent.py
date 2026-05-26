@@ -752,10 +752,25 @@ class Agent:
         self.working_memory.record_attempt("回归测试", success=False,
             result="待执行", tool="_regression")
 
+        # 构建系统完整性检查（C++/CMake 项目）
+        import os as _os
+        for build_file in ["CMakeLists.txt", "Makefile", "meson.build"]:
+            if _os.path.exists(build_file):
+                vr = self.verifier.verify_build_system(_os.getcwd())
+                if not vr.passed:
+                    issues = "\n".join(f"  - {i}" for i in vr.issues[:5])
+                    return (
+                        f"\n## ⚠️ 构建系统完整性检查失败\n"
+                        f"检测到以下文件引用不一致：\n{issues}\n"
+                        f"请在报告'任务完成'之前修复这些问题。"
+                    )
+                break
+
         return (
             "\n## 回归检查 — 任务接近完成\n"
             "大部分步骤已完成。在报告'任务完成'之前，必须运行一次完整验证：\n"
-            "- 如果有 Makefile: 运行 make test 或 make check\n"
+            "- 如果有 CMakeLists.txt: 运行 cmake -B build && cmake --build build\n"
+            "- 如果有 Makefile: 运行 make 或 make test\n"
             "- 如果有 pyproject.toml: 运行 pytest 或 python -m pytest\n"
             "- 如果有 package.json: 运行 npm test\n"
             "- 如果有 go.mod: 运行 go test ./...\n"

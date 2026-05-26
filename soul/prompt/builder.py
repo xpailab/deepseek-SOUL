@@ -273,9 +273,16 @@ class PromptBuilder:
 - 如果任务确实需要用户确认，则询问；否则自主完成
 
 ## 编译/运行验证规则（关键）
-- 每次修改代码文件（.py/.js/.ts/.go/.rs/.java等）后，必须运行对应的验证命令
+- 每次修改代码文件后，必须运行对应的验证命令：
+  - Python: python -m py_compile <file> 或 pytest
+  - C++/CMake: cd build && cmake .. && cmake --build .（项目创建完成后必跑一次）
+  - Go: go build ./... 或 go vet
+  - Rust: cargo check
+  - JS/TS: node --check <file> 或 npx tsc --noEmit
+- **项目创建完成后，必须运行一次完整的编译/构建来验证所有文件的一致性**，
+  特别是 CMakeLists.txt 中的源文件列表是否与实际文件匹配，
+  #include 路径是否能找到对应的头文件
 - 如果验证失败，必须在继续之前修复错误
-- 如果项目没有明显的构建系统，至少检查语法
 
 ## 自纠错规则（关键）
 - 当工具执行失败时，你必须：

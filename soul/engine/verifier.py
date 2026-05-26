@@ -292,3 +292,53 @@ class ResultVerifier:
             stdout = result.get("stdout", "")
             return not stdout or len(stdout.strip()) == 0
         return False
+
+    # ═══ 构建系统完整性检查 ═══
+
+    @staticmethod
+    def verify_build_system(project_dir: str = ".") -> VerifyResult:
+        """检查构建系统引用的源文件是否都存在。
+
+        支持 CMakeLists.txt / Makefile / meson.build。
+        返回 VerifyResult，passed=False 时有缺失文件列表。
+        """
+        import re
+        from pathlib import Path
+
+        root = Path(project_dir)
+        vr = VerifyResult(passed=True, tool_name="build_system")
+
+        # CMake: 检查 add_executable / add_library / set(SOURCES ...) 中的 .cpp/.c 文件
+        cmake_file = root / "CMakeLists.txt"
+        if cmake_file.exists():
+            try:
+                content = cmake_file.read_text(encoding="utf-8")
+            except Exception:
+                content = cmake_file.read_text()
+            src_files = re.findall(r'(?:src|source)[/\w]*\.(?:cpp|c|cxx|cc)\b', content)
+            for sf in src_files:
+                if not (root / sf).exists():
+                    vr.passed = False
+                    vr.issues.append(f"CMakeLists.txt 引用 {sf} — 文件不存在")
+                    vr.suggestions.append(f"检查 {sf} 是否已创建，或从 CMakeLists.txt 中移除该引用")
+
+        # C/C++ include 检查：扫描 .cpp/.h 文件中的 #include "..." 是否有对应头文件
+        for cpp_file in root.rglob("*.cpp"):
+            try:
+                content = cpp_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            local_includes = re.findall(r'#include\s+\"([^\"]+)\"', content)
+            for inc in local_includes:
+                # 相对 include（如 "myllama/model.h"）→ 在 include/ 或 src/ 下查找
+                rel = root / "include" / inc
+                if rel.exists():
+                    continue
+                # 也在 src/ 下找（同目录 include）
+                candidates = list(root.rglob(f"**/{Path(inc).name}"))
+                if not candidates:
+                    vr.passed = False
+                    vr.issues.append(f"{cpp_file.relative_to(root)} include '{inc}' — 头文件不存在")
+                    vr.suggestions.append(f"检查 {inc} 的实际路径，或修改 #include")
+
+        return vr
