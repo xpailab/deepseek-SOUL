@@ -805,8 +805,9 @@ class Agent:
 
         # 首轮：注入首轮专用规则 + 侦察指令 + 检查点续跑或规划
         if first_round:
-            # 首轮专用规则（侦察/反问/编辑策略）——从 builder 注入
-            parts.append(self.prompt_builder._first_round_injection())
+            if not is_multi_turn:
+                # 首轮专用规则（侦察/反问/编辑策略）——从 builder 注入
+                parts.append(self.prompt_builder._first_round_injection())
             if wm.execution_plan.is_empty():
                 cp = self.checkpoint_mgr.load_latest(max_age_hours=1)
                 if cp:
@@ -827,9 +828,9 @@ class Agent:
                         wm.add_finding(f)
                     for r in cp.ruled_out:
                         wm.rule_out(r)
-                else:
-                    # 侦察阶段指令：动手前先看清楚
-                    parts.append(self._recon_prompt(user_message, is_multi_turn))
+                elif not is_multi_turn:
+                    # 侦察阶段指令：动手前先看清楚（仅首轮）
+                    parts.append(self._recon_prompt(user_message, is_multi_turn=False))
                     # 编码任务：注入小步快跑节拍
                     coding_cadence = self._coding_cadence_prompt(user_message)
                     if coding_cadence:
@@ -985,27 +986,46 @@ class Agent:
         system_prompt: str, tools: list[dict] | None,
         state: AgentState = AgentState.THINKING,
     ) -> dict:
-        """chat/chat_stream 公共前置处理——记忆检索+Prompt构建+循环变量初始化。"""
+        """chat/chat_stream 公共前置处理——记忆检索+Prompt构建+循环变量初始化。
+
+        多轮对话时跳过重开销操作（记忆检索/技能匹配/侦察注入），
+        直接用对话历史作为上下文。"""
         await self.sessions.update_state(session_id, state or AgentState.THINKING)
         history = await self.sessions.get_history(session_id)
-        memory_context = await self.memory.query_for_prompt(user_message)
-        matched_skills = self.memory.procedural.match(user_message, top_k=2)
-        base_system_prompt = self.prompt_builder.build_system_prompt(
-            matched_skills=matched_skills,
-            tools=tools or self.tools.to_api_schemas(),
-            extra_context=memory_context,
-        )
-        if system_prompt:
-            base_system_prompt = base_system_prompt + "\n\n" + system_prompt
-
-        # 检测多轮对话——有历史消息时跳过从头侦察
         is_multi_turn = len(history) >= 2  # 至少一轮完整对话
 
-        enhanced_prompt = self._build_enhanced_prompt(
-            base_system_prompt, user_message, first_round=True,
-            is_multi_turn=is_multi_turn,
-        )
-        self.working_memory.clear()
+        if is_multi_turn:
+            # 多轮对话：极简 prompt——对话历史已包含全部上下文
+            import platform
+            base_system_prompt = (
+                "<agent_rules>\n"
+                "- 你是 DeepSoul，使用中文与用户沟通\n"
+                "- 对话历史中已有之前的完整上下文，直接基于历史回答\n"
+                "- 当前系统: " + platform.system() + "\n"
+                "- 遇到错误时分析根因，不要盲目重试\n"
+                "- 直接做事，完成后简要总结\n"
+                "</agent_rules>"
+            )
+            if system_prompt:
+                base_system_prompt = base_system_prompt + "\n\n" + system_prompt
+            enhanced_prompt = base_system_prompt  # 不注入额外内容
+            self.working_memory.clear()
+        else:
+            # 首轮：完整管线
+            memory_context = await self.memory.query_for_prompt(user_message)
+            matched_skills = self.memory.procedural.match(user_message, top_k=2)
+            base_system_prompt = self.prompt_builder.build_system_prompt(
+                matched_skills=matched_skills,
+                tools=tools or self.tools.to_api_schemas(),
+                extra_context=memory_context,
+            )
+            if system_prompt:
+                base_system_prompt = base_system_prompt + "\n\n" + system_prompt
+            enhanced_prompt = self._build_enhanced_prompt(
+                base_system_prompt, user_message, first_round=True,
+                is_multi_turn=False,
+            )
+            self.working_memory.clear()
 
         user_msg = Message(role=MessageRole.USER, content=user_message)
         full_messages = self.prompt_builder.build_messages(
