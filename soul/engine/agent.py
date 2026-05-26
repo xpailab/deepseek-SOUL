@@ -598,25 +598,34 @@ class Agent:
             return True
         return is_vague and not has_specific
 
-    def _recon_prompt(self, task: str) -> str:
+    def _recon_prompt(self, task: str, is_multi_turn: bool = False) -> str:
         """生成侦察阶段指令——动手前先摸清现状。"""
         cwd = getattr(self, 'startup_cwd', '') or __import__('os').getcwd()
         ambiguous = self._is_vague_task(task)
 
         lines = [f"\n## 用户当前工作目录: {cwd}"]
 
-        # 多轮对话提醒：优先参考历史
-        lines.append(
-            "\n## 多轮对话注意"
-            "\n- 用户可能在延续之前的对话，先回顾**对话历史**，确认是否有相关的上文"
-            "\n- 如果用户说「刚才」「之前」「你构建的」等，指的是**对话历史中你刚完成的任务**"
-            "\n- 不要从头开始侦察——先看对话历史确认上下文"
-        )
+        if is_multi_turn:
+            # 多轮对话：不从头侦察，用对话历史做上下文
+            lines.append(
+                "\n## 多轮对话——不要从头侦察"
+                "\n- 这是对话的后续轮次，**对话历史**中已有上文"
+                "\n- 先看上一轮你说了什么、做了什么，基于那个上下文理解用户当前消息"
+                "\n- 不要再用 file/read 从头侦察目录——除非用户明确要求读新文件"
+                "\n- 如果用户在回复你的提问（如「需要」「好的」「对」），直接执行上文讨论的操作"
+            )
+        else:
+            # 首轮：正常侦察流程
+            lines.append(
+                "\n## 多轮对话注意"
+                "\n- 用户可能在延续之前的对话，先回顾**对话历史**，确认是否有相关的上文"
+                "\n- 如果用户说「刚才」「之前」「你构建的」等，指的是**对话历史中你刚完成的任务**"
+                "\n- 不要从头开始侦察——先看对话历史确认上下文"
+            )
 
         lines.append("\n## 当前阶段: 侦察与理解")
-        # 短确认（非模糊）→ 跳过侦察，直接查对话历史
-        if len(task.strip()) <= 10 and not ambiguous:
-            lines.append("用户消息很短——这可能是在回复你上一轮的提问。不要从头侦察，先看**对话历史中你最后说了什么**，然后直接执行。")
+        if is_multi_turn:
+            lines.append("这是对话的后续轮次。基于对话历史上文理解用户意图，直接回答或执行。")
         elif ambiguous:
             lines.append("⚠️ 用户的任务描述比较模糊——先回顾对话历史，如果上文已明确则直接回答，不要反问。")
         else:
@@ -782,7 +791,8 @@ class Agent:
     # ═══════════════════════════════════════════
 
     def _build_enhanced_prompt(
-        self, base_prompt: str, user_message: str, first_round: bool
+        self, base_prompt: str, user_message: str, first_round: bool,
+        is_multi_turn: bool = False,
     ) -> str:
         """构建增强系统提示——注入工作记忆、错误知识库、检查点。"""
         wm = self.working_memory
@@ -819,7 +829,7 @@ class Agent:
                         wm.rule_out(r)
                 else:
                     # 侦察阶段指令：动手前先看清楚
-                    parts.append(self._recon_prompt(user_message))
+                    parts.append(self._recon_prompt(user_message, is_multi_turn))
                     # 编码任务：注入小步快跑节拍
                     coding_cadence = self._coding_cadence_prompt(user_message)
                     if coding_cadence:
@@ -988,8 +998,12 @@ class Agent:
         if system_prompt:
             base_system_prompt = base_system_prompt + "\n\n" + system_prompt
 
+        # 检测多轮对话——有历史消息时跳过从头侦察
+        is_multi_turn = len(history) >= 2  # 至少一轮完整对话
+
         enhanced_prompt = self._build_enhanced_prompt(
-            base_system_prompt, user_message, first_round=True
+            base_system_prompt, user_message, first_round=True,
+            is_multi_turn=is_multi_turn,
         )
         self.working_memory.clear()
 
