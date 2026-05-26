@@ -86,6 +86,15 @@ class Gateway:
             self._stats["errors"] += 1
             return {"error": str(e)}
 
+    @staticmethod
+    def _log(level: str, msg: str) -> None:
+        """输出日志到终端。"""
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        tags = {"info": "📘", "req": "→", "resp": "←", "err": "✗", "ws": "⇄"}
+        tag = tags.get(level, "·")
+        print(f"{ts}  {tag}  {msg}", flush=True)
+
     async def _handle_cli_message(self, msg):
         return await self.handle_message(msg)
 
@@ -130,6 +139,7 @@ class Gateway:
             async def api_chat(req: dict[str, Any]):
                 msg = req.get("message", "")
                 sid = req.get("session_id", "")
+                self._log("req", f"POST /api/chat [{sid[:8]}] {msg[:80]}")
                 if not msg:
                     return JSONResponse({"error": "消息为空"}, 400)
                 a = self.agent
@@ -142,6 +152,7 @@ class Gateway:
                         "message_len": len(msg),
                     })
                 reply = await a.chat(msg, session_id=sid)
+                self._log("resp", f"POST /api/chat [{sid[:8]}] → {len(reply)} chars")
                 return {"reply": reply, "session_id": sid}
 
             @app.post("/api/sessions")
@@ -232,11 +243,13 @@ class Gateway:
             @app.websocket("/ws/chat")
             async def ws_chat(ws: WebSocket):
                 await ws.accept()
+                self._log("ws", "WebSocket 已连接")
                 try:
                     while self._running:
                         data = await ws.receive_json()
                         txt = data.get("message", "")
                         sid = data.get("session_id", "")
+                        self._log("req", f"WS  [{sid[:8]}] {txt[:80]}")
                         if not txt or not self.agent:
                             continue
                         if self.auditor:
