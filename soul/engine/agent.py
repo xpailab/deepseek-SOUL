@@ -1019,7 +1019,7 @@ class Agent:
         is_multi_turn = len(history) >= 2  # 至少一轮完整对话
 
         if is_multi_turn:
-            # 多轮对话：极简 prompt——对话历史已包含全部上下文
+            # 多轮对话：极简规则 + 项目上下文（如有）——对话历史包含全部上下文
             import platform
             base_system_prompt = (
                 "<agent_rules>\n"
@@ -1032,8 +1032,16 @@ class Agent:
             )
             if system_prompt:
                 base_system_prompt = base_system_prompt + "\n\n" + system_prompt
-            enhanced_prompt = base_system_prompt  # 不注入额外内容
+            # 保留上一轮的项目文件清单（跨轮次 API 一致性）
+            saved_files = dict(self.working_memory.project_files)
             self.working_memory.clear()
+            self.working_memory.project_files = saved_files
+
+            # 注入项目文件清单
+            project_ctx = self.working_memory.get_project_context()
+            if project_ctx:
+                base_system_prompt += "\n\n" + project_ctx
+            enhanced_prompt = base_system_prompt
         else:
             # 首轮：完整管线
             memory_context = await self.memory.query_for_prompt(user_message)
