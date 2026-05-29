@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from soul.config.manager import ConfigManager
@@ -186,6 +187,19 @@ class Agent:
 
         # 2. 初始化记忆系统
         await self.memory.initialize()
+
+        # 2b. 接通记忆系统的 LLM 扩展——让 L3 能做语义搜索而非纯关键词
+        async def _memory_llm(prompt: str) -> str:
+            try:
+                resp = await self.llm.chat(
+                    [Message(role=MessageRole.USER, content=prompt)],
+                    system_prompt="你是一个搜索查询扩展助手。只输出关键词，用逗号分隔。",
+                    config=self.config.llm, provider=self.config.llm.provider,
+                )
+                return resp.content.strip()
+            except Exception:
+                return ""
+        self.memory.set_llm(_memory_llm)
 
         # 3. 初始化会话
         await self.sessions.get_or_create("main")
@@ -1059,8 +1073,22 @@ class Agent:
             enhanced_static = base_system_prompt
             enhanced_dynamic = ""  # 多轮无额外 dynamic
         else:
-            # 首轮：完整管线
+            # 首轮：完整管线 + 注入最近工作记录
             memory_context = await self.memory.query_for_prompt(user_message)
+            # 新会话附上最近的工作记录和项目清单
+            recent = self.memory.frozen.get_memory()
+            if recent.strip():
+                recent_ctx = "## 最近的工作记录\n" + recent[-1500:]
+                memory_context = recent_ctx + "\n\n" + (memory_context or "")
+            # 加载持久化的项目文件清单
+            try:
+                import json as _json
+                pf_path = Path(self.config.memory.workspace_dir).expanduser() / "projects.json"
+                if pf_path.exists():
+                    saved = _json.loads(pf_path.read_text(encoding="utf-8"))
+                    self.working_memory.project_files.update(saved)
+            except Exception:
+                pass
             matched_skills = self.memory.procedural.match(user_message, top_k=2)
             base_system_prompt = self.prompt_builder.build_system_prompt(
                 matched_skills=matched_skills,
@@ -1115,8 +1143,45 @@ class Agent:
 
         await self.memory.observe_action(user_message)
         await self.memory.store_conversation(session_id, current_messages)
-        summary = f"用户: {user_message[:100]} | 回复: {final_content[:100]}"
+
+        # 结构化日报——不只是"用户:xxx|回复:xxx"
+        import datetime
+        now = datetime.datetime.now().strftime("%m-%d %H:%M")
+        ok = sum(1 for r in all_tool_results if hasattr(r, 'success') and r.success)
+        total = len(all_tool_results)
+        status = "✓" if consecutive_fails < 5 else "✗"
+
+        lines = [f"[{now}] {status} {user_message[:80]}"]
+        if total > 0:
+            lines.append(f"  工具: {ok}/{total} 成功")
+        # 创建了哪些文件
+        if self.working_memory.project_files:
+            files = list(self.working_memory.project_files.keys())[-8:]
+            lines.append(f"  文件: {', '.join(files)}")
+        # 关键发现
+        if self.working_memory.findings:
+            for f in self.working_memory.findings[-3:]:
+                lines.append(f"  发现: {f[:120]}")
+        # 遇到的错误
+        if self.working_memory.error_patterns:
+            for e in self.working_memory.error_patterns[-3:]:
+                lines.append(f"  错误: {e.get('tool','')}: {e.get('error','')[:100]}")
+        summary = "\n".join(lines)
         await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
+
+        # 持久化项目文件清单——下次会话能知道之前创建了哪些项目
+        if self.working_memory.project_files:
+            try:
+                import json as _json
+                pf_path = Path(self.config.memory.workspace_dir).expanduser() / "projects.json"
+                existing = {}
+                if pf_path.exists():
+                    existing = _json.loads(pf_path.read_text(encoding="utf-8"))
+                existing.update(self.working_memory.project_files)
+                pf_path.parent.mkdir(parents=True, exist_ok=True)
+                pf_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
         is_simple = (actual_rounds == 1 and len(all_tool_results) == 0)
         if not is_simple:
