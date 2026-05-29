@@ -1056,7 +1056,8 @@ class Agent:
             project_ctx = self.working_memory.get_project_context()
             if project_ctx:
                 base_system_prompt += "\n\n" + project_ctx
-            enhanced_prompt = base_system_prompt
+            enhanced_static = base_system_prompt
+            enhanced_dynamic = ""  # 多轮无额外 dynamic
         else:
             # 首轮：完整管线
             memory_context = await self.memory.query_for_prompt(user_message)
