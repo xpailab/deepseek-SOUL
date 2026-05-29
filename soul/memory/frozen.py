@@ -145,14 +145,15 @@ class FrozenMemory:
 
     @staticmethod
     def _compress(content: str, max_chars: int) -> str:
-        """压缩内容到容量限制内，保留最重要条目。"""
+        """压缩内容到容量限制内，保留最近的条目。"""
         entries = content.split("§")
         if len(entries) <= 1:
-            return content[:max_chars]
+            return content[-max_chars:] if len(content) > max_chars else content
 
+        # 从最新到最旧，优先保留最近的
         kept: list[str] = []
         total = 0
-        for entry in entries:
+        for entry in reversed(entries):
             entry = entry.strip()
             if not entry:
                 continue
@@ -160,6 +161,4 @@ class FrozenMemory:
             if total + size <= max_chars:
                 kept.append(entry)
                 total += size
-            else:
-                break
-        return "§ ".join(kept)
+        return "§".join(reversed(kept))

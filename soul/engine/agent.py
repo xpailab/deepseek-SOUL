@@ -1186,6 +1186,10 @@ class Agent:
                 if pf_path.exists():
                     existing = _json.loads(pf_path.read_text(encoding="utf-8"))
                 existing.update(self.working_memory.project_files)
+                # 保持最近 200 条——自动压缩
+                if len(existing) > 200:
+                    keys = list(existing.keys())[-200:]
+                    existing = {k: existing[k] for k in keys}
                 pf_path.parent.mkdir(parents=True, exist_ok=True)
                 pf_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
@@ -1425,6 +1429,11 @@ class Agent:
 
             with open(lessons_path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+
+            # 保持最近 100 条——自动压缩
+            all_lines = lessons_path.read_text(encoding="utf-8").strip().split("\n")
+            if len(all_lines) > 100:
+                lessons_path.write_text("\n".join(all_lines[-100:]) + "\n", encoding="utf-8")
         except Exception:
             pass
 
