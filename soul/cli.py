@@ -91,6 +91,42 @@ def chat(
     asyncio.run(_run())
 
 
+async def _stream_chat(agent: Agent, user_input: str, session_id: str) -> str:
+    """流式对话——支持中断和 steer 注入。"""
+    full_response = ""
+    steer_text = None
+
+    async def _run():
+        nonlocal full_response
+        async for chunk in agent.chat_stream(user_input, session_id=session_id):
+            nonlocal steer_text
+            # 检查 steer 注入
+            if steer_text:
+                agent.lane_queue._active_runs.add(session_id)
+                cb = agent.lane_queue._steer_callbacks.get(session_id)
+                if cb:
+                    await cb(steer_text)
+                steer_text = None
+            if chunk.content:
+                console.print(chunk.content, end="")
+                full_response += chunk.content
+            if chunk.tool_call:
+                tc = chunk.tool_call
+                args_str = str(tc.arguments)
+                if len(args_str) > 80:
+                    args_str = args_str[:80] + "..."
+                console.print(
+                    f"\n[dim]🔧 {tc.name}({args_str})[/dim]",
+                    end="",
+                )
+        return full_response
+
+    task = asyncio.create_task(_run())
+    try:
+        return await task
+    except asyncio.CancelledError:
+        raise
+
 async def _interactive_loop(agent: Agent, session_id: str = ""):
     """交互式对话循环。"""
     console.print()
@@ -105,6 +141,16 @@ async def _interactive_loop(agent: Agent, session_id: str = ""):
 
     session = await agent.sessions.get_or_create(session_id=session_id)
     session_id = session.session_id
+
+    # 当前正在运行的 chat task——供 Ctrl+C 中断
+    _current_task: asyncio.Task | None = None
+    import signal
+
+    def _on_interrupt(sig, frame):
+        if _current_task and not _current_task.done():
+            _current_task.cancel()
+
+    signal.signal(signal.SIGINT, _on_interrupt)
 
     while True:
         try:
@@ -121,29 +167,35 @@ async def _interactive_loop(agent: Agent, session_id: str = ""):
             if user_input.lower() in ("/quit", "/exit", "/q"):
                 console.print("[dim]再见！[/dim]")
                 break
+            # /s 消息 — 注入到正在运行的任务中
+            if user_input.lower().startswith("/s "):
+                steer_text = user_input[3:].strip()
+                if _current_task and not _current_task.done():
+                    agent.lane_queue._active_runs.add(session_id)
+                    cb = agent.lane_queue._steer_callbacks.get(session_id)
+                    if cb:
+                        await cb(steer_text)
+                        console.print(f"[yellow]📩 已注入: {steer_text[:50]}[/yellow]")
+                    else:
+                        console.print("[dim]当前没有运行中的任务[/dim]")
+                else:
+                    console.print("[dim]当前没有运行中的任务[/dim]")
+                continue
             result = await agent.handle_command(user_input, session_id)
             console.print(f"[dim]{result}[/dim]")
             continue
 
-        # 发送消息
+        # 发送消息——可中断、可插入指令
         console.print()
         console.print("[bold blue]DeepSoul:[/bold blue]")
+        console.print("[dim](Ctrl+C 打断)[/dim]")
 
-        full_response = ""
+        chat_task = asyncio.create_task(_stream_chat(agent, user_input, session_id))
+        _current_task = chat_task
         try:
-            async for chunk in agent.chat_stream(user_input, session_id=session_id):
-                if chunk.content:
-                    console.print(chunk.content, end="")
-                    full_response += chunk.content
-                if chunk.tool_call:
-                    tc = chunk.tool_call
-                    args_str = str(tc.arguments)
-                    if len(args_str) > 80:
-                        args_str = args_str[:80] + "..."
-                    console.print(
-                        f"\n[dim]🔧 {tc.name}({args_str})[/dim]",
-                        end="",
-                    )
+            await chat_task
+        except asyncio.CancelledError:
+            console.print("\n[yellow]⏸️ 已中断[/yellow]")
         except Exception as e:
             console.print(f"\n[red]错误: {e}[/red]")
 

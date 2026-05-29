@@ -145,20 +145,44 @@ class FrozenMemory:
 
     @staticmethod
     def _compress(content: str, max_chars: int) -> str:
-        """压缩内容到容量限制内，保留最近的条目。"""
+        """压缩内容到容量限制内，优先保留未完成任务和最新条目。"""
         entries = content.split("§")
         if len(entries) <= 1:
             return content[-max_chars:] if len(content) > max_chars else content
 
-        # 从最新到最旧，优先保留最近的
-        kept: list[str] = []
-        total = 0
-        for entry in reversed(entries):
+        # 分类：未完成(○) vs 已完成(✓/✗)
+        pending = []
+        done = []
+        for entry in entries:
             entry = entry.strip()
             if not entry:
                 continue
+            # 检查是否未完成任务标记
+            if entry.startswith("[") and "○" in entry[:20]:
+                pending.append(entry)
+            else:
+                done.append(entry)
+
+        # 先保留未完成任务（最重要的）
+        total = 0
+        kept = []
+        for entry in pending:
             size = len(entry) + 3
             if total + size <= max_chars:
                 kept.append(entry)
                 total += size
-        return "§".join(reversed(kept))
+
+        # 再按最新优先保留已完成任务
+        for entry in reversed(done):
+            size = len(entry) + 3
+            if total + size <= max_chars:
+                kept.append(entry)
+                total += size
+            else:
+                break
+
+        # kept 里 pending 在前，done 在后（反序），再反转使整体按时间正序
+        # pending 保持原序（旧→新），done 是反序加入的（新→旧）
+        kept_done = [e for e in kept if e not in pending]
+        kept_pending = [e for e in kept if e in pending]
+        return "§".join(kept_pending + list(reversed(kept_done)))

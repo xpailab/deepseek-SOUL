@@ -281,6 +281,21 @@ class Gateway:
                         self._log("req", f"WS  [{sid[:8]}] {txt[:80]}")
                         if not txt or not self.agent:
                             continue
+                        # 处理 steer 注入 / 停止指令
+                        action = data.get("action", "")
+                        if action == "steer":
+                            self.agent.lane_queue._active_runs.add(sid)
+                            cb = self.agent.lane_queue._steer_callbacks.get(sid)
+                            if cb:
+                                await cb(txt)
+                                self._log("req", f"STEER [{sid[:8]}] {txt[:50]}")
+                            continue
+                        if action == "stop":
+                            self._log("req", f"STOP [{sid[:8]}]")
+                            try: await ws.send_json({"f": "stop"})
+                            except Exception: pass
+                            continue
+
                         if self.auditor:
                             self.auditor.record("api_access", {
                                 "endpoint": "/ws/chat",
@@ -639,7 +654,12 @@ CHAT_PAGE = """<!DOCTYPE html>
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
-      <div class="input-hint">Enter 发送 · Shift+Enter 换行 · 并行 Agent 自动分配</div>
+      <div id="steerRow" style="display:none; margin-top:8px; gap:8px; align-items:center;">
+        <input id="steerInput" placeholder="执行中插入指令…" style="flex:1; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:.8rem;" onkeydown="if(event.key==='Enter'){steerSend();event.preventDefault();}">
+        <button onclick="steerSend()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:.8rem;">插入</button>
+        <button id="btnStop" onclick="stopAgent()" style="display:none; background:var(--danger);color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:.8rem;">⏹ 停止</button>
+      </div>
+      <div class="input-hint">Enter 发送 · Shift+Enter 换行 · /s 消息 可插入指令</div>
     </div>
   </div>
 </div>
@@ -790,6 +810,7 @@ function toast(t) {
       }
       if(d.f){
         simpleMsg = null;
+        hideSteer();
         document.getElementById('sendBtn').disabled = false;
         document.getElementById('input').focus();
         document.getElementById('msgCount').textContent = document.querySelectorAll('.msg').length + ' 条消息';
@@ -1062,6 +1083,26 @@ function toast(t) {
     document.getElementById('sendBtn').disabled=true;
     ws.send(JSON.stringify({message:text,session_id:sessionId}));
     updateSessionStatus(activeSid, 'running');
+    showSteer();
+  }
+
+  function showSteer() { document.getElementById('steerRow').style.display='flex'; document.getElementById('btnStop').style.display='inline'; }
+  function hideSteer() { document.getElementById('steerRow').style.display='none'; document.getElementById('btnStop').style.display='none'; }
+  function steerSend() {
+    var txt = document.getElementById('steerInput').value.trim();
+    if(!txt || !ws || !wsReady) return;
+    ws.send(JSON.stringify({message:txt, session_id:sessionId, action:'steer'}));
+    document.getElementById('steerInput').value = '';
+    toast('已插入: '+txt.slice(0,30));
+  }
+  function stopAgent() {
+    if(ws && wsReady) {
+      ws.send(JSON.stringify({message:'__STOP__', session_id:sessionId, action:'stop'}));
+      hideSteer();
+      document.getElementById('sendBtn').disabled = false;
+      if(activeSid) updateSessionStatus(activeSid, 'done');
+      toast('已发送停止信号');
+    }
   }
 
   function continueStage() {

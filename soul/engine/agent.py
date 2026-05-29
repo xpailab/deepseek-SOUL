@@ -635,6 +635,15 @@ class Agent:
 
         lines = [f"\n## 用户当前工作目录: {cwd}"]
 
+        # 主动简报：让 Agent 自主报告未完成任务和历史教训
+        lines.append(
+            "\n## 主动上下文感知"
+            "\n- 先快速扫描上面「最近的工作记录」——标记为 ○ 的是**未完成的任务**"
+            "\n- 如果有未完成任务，主动告诉用户：「上次有个任务还没做完——需要继续吗？」"
+            "\n- 扫描「历史经验」——如果有跟当前任务相关的教训，主动提醒用户注意"
+            "\n- 不要等用户问——主动提供你看到的信息"
+        )
+
         if is_multi_turn:
             # 多轮对话：不从头侦察，用对话历史做上下文
             lines.append(
@@ -1154,7 +1163,13 @@ class Agent:
         now = datetime.datetime.now().strftime("%m-%d %H:%M")
         ok = sum(1 for r in all_tool_results if hasattr(r, 'success') and r.success)
         total = len(all_tool_results)
-        status = "✓" if consecutive_fails < 5 else "✗"
+        # ✓ 完成  ○ 未完成(有错误)  ✗ 失败
+        if consecutive_fails >= 5:
+            status = "✗"
+        elif total > 0 and ok < total:
+            status = "○"  # 有工具失败——任务不完整，需要继续
+        else:
+            status = "✓"
 
         lines = [f"[{now}] {status} {user_message[:80]}"]
         if total > 0:
@@ -1427,6 +1442,39 @@ class Agent:
             if wm.ruled_out:
                 entry["ruled_out"] = wm.ruled_out[-3:]
 
+            # 检测重复错误模式 → 生成防御规则
+            if wm.error_patterns:
+                all_lines = []
+                if lessons_path.exists():
+                    all_lines = lessons_path.read_text(encoding="utf-8").strip().split("\n")
+                # 统计相同工具+相似错误的次数
+                err_counts: dict[str, int] = {}
+                for line in all_lines[-20:]:
+                    try:
+                        prev = _json.loads(line)
+                        for e in prev.get("errors", []):
+                            key = e[:60]  # "tool: error_msg" 前 60 字符
+                            err_counts[key] = err_counts.get(key, 0) + 1
+                    except Exception:
+                        pass
+                # 当前任务的错误
+                for e in wm.error_patterns[-3:]:
+                    key = f"{e.get('tool','')}: {e.get('error','')[:60]}"
+                    err_counts[key] = err_counts.get(key, 0) + 1
+
+                # 找到 ≥2 次的错误模式，标记为防御规则
+                defense_rules = []
+                for key, count in err_counts.items():
+                    if count >= 2:
+                        parts = key.split(": ", 1)
+                        defense_rules.append({
+                            "tool": parts[0],
+                            "pattern": parts[1][:80] if len(parts) > 1 else key,
+                            "count": count,
+                        })
+                if defense_rules:
+                    entry["defense_rules"] = defense_rules
+
             with open(lessons_path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -1474,6 +1522,12 @@ class Agent:
                 return ""
 
             lines_out = ["\n## 历史经验（从之前类似任务中学到的）"]
+            # 先列出防御规则
+            for entry in relevant:
+                if entry.get("defense_rules"):
+                    for rule in entry["defense_rules"][:2]:
+                        lines_out.append(f"\n⚠️ **防御规则（重复 {rule.get('count',2)} 次）**: {rule.get('tool','')} 操作时注意——{rule.get('pattern','')[:100]}")
+
             for entry in relevant:
                 task_name = entry.get("task", "")[:60]
                 lines_out.append(f"\n### 相关任务: {task_name}")
