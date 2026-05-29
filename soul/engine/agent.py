@@ -1089,6 +1089,11 @@ class Agent:
                     self.working_memory.project_files.update(saved)
             except Exception:
                 pass
+
+            # 注入历史教训——让 Agent 不用重复踩坑
+            lessons_ctx = self._inject_relevant_lessons(user_message)
+            if lessons_ctx:
+                memory_context = (memory_context or "") + "\n\n" + lessons_ctx
             matched_skills = self.memory.procedural.match(user_message, top_k=2)
             base_system_prompt = self.prompt_builder.build_system_prompt(
                 matched_skills=matched_skills,
@@ -1168,6 +1173,9 @@ class Agent:
                 lines.append(f"  错误: {e.get('tool','')}: {e.get('error','')[:100]}")
         summary = "\n".join(lines)
         await self.memory.remember(summary, layer=MemoryLayer.FROZEN)
+
+        # 自动提取教训——每次任务积累经验，越用越聪明
+        self._extract_lessons(user_message, total)
 
         # 持久化项目文件清单——下次会话能知道之前创建了哪些项目
         if self.working_memory.project_files:
@@ -1386,6 +1394,93 @@ class Agent:
 
         except Exception:
             pass  # 技能学习失败不影响主流程
+
+    # ═══════════════════════════════════════════
+    # 自我进化——每次任务积累经验
+    # ═══════════════════════════════════════════
+
+    def _extract_lessons(self, task: str, tool_count: int) -> None:
+        """从当前任务的错误和发现中提取教训，追加到 lessons 文件。"""
+        wm = self.working_memory
+        if not wm.error_patterns and not wm.findings:
+            return
+        try:
+            import json as _json, datetime as _dt
+            lessons_path = Path(self.config.memory.workspace_dir).expanduser() / "lessons.jsonl"
+            lessons_path.parent.mkdir(parents=True, exist_ok=True)
+
+            entry = {
+                "time": _dt.datetime.now().isoformat(),
+                "task": task[:200],
+                "tools_used": tool_count,
+            }
+            if wm.error_patterns:
+                entry["errors"] = [
+                    f"{e.get('tool','')}: {e.get('error','')[:150]}" for e in wm.error_patterns[-3:]
+                ]
+            if wm.findings:
+                entry["findings"] = wm.findings[-5:]
+            if wm.ruled_out:
+                entry["ruled_out"] = wm.ruled_out[-3:]
+
+            with open(lessons_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _inject_relevant_lessons(self, task: str) -> str:
+        """从历史教训中匹配与当前任务相关的内容，注入为教练上下文。"""
+        try:
+            import json as _json
+            lessons_path = Path(self.config.memory.workspace_dir).expanduser() / "lessons.jsonl"
+            if not lessons_path.exists():
+                return ""
+
+            # 读取最近 20 条教训
+            lines = []
+            with open(lessons_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    lines.append(line.strip())
+            recent = lines[-20:]
+
+            # 简单关键词匹配——找与当前任务相关的教训
+            task_lower = task.lower()
+            relevant = []
+            for line in reversed(recent):
+                try:
+                    entry = _json.loads(line)
+                    entry_text = _json.dumps(entry, ensure_ascii=False).lower()
+                    # 宽松匹配：任何关键词重叠即可
+                    words = set(task_lower.split())
+                    entry_words = set(entry_text.split())
+                    overlap = words & entry_words
+                    if overlap and len(overlap) >= 2:
+                        relevant.append(entry)
+                except Exception:
+                    continue
+                if len(relevant) >= 3:
+                    break
+
+            if not relevant:
+                return ""
+
+            lines_out = ["\n## 历史经验（从之前类似任务中学到的）"]
+            for entry in relevant:
+                task_name = entry.get("task", "")[:60]
+                lines_out.append(f"\n### 相关任务: {task_name}")
+                if entry.get("errors"):
+                    lines_out.append("**踩过的坑**:")
+                    for e in entry["errors"][:2]:
+                        lines_out.append(f"  - {e}")
+                if entry.get("findings"):
+                    lines_out.append("**发现**:")
+                    for f in entry["findings"][:2]:
+                        lines_out.append(f"  - {f[:120]}")
+                if entry.get("ruled_out"):
+                    lines_out.append(f"**排除的方向**: {', '.join(entry['ruled_out'][:2])}")
+            return "\n".join(lines_out)
+        except Exception:
+            return ""
 
     # ═══════════════════════════════════════════
     # 管理 API
