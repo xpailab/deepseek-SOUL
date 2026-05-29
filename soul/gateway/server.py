@@ -690,10 +690,10 @@ function toast(t) {
       var cls=(s.id===activeSid)?' active':'';
       var sc=s.status==='running'?'running':(s.status==='error'?'error':'done');
       var sl=s.status==='running'?'执行中':(s.status==='error'?'出错':'完成');
-      return '<div class="session-item'+cls+'" data-sid="'+s.id+'" onclick="switchSession(\x27'+s.id+'\x27)">'+
+      return '<div class="session-item'+cls+'" data-sid="'+s.id+'" onclick="switchSession(&#39;'+s.id+'&#39;)">'+
         '<span class="s-title">'+(s.title||'新对话')+'</span>'+
         '<span class="s-status '+sc+'">'+sl+'</span>'+
-        '<span class="s-delete" onclick="event.stopPropagation();deleteSession(\x27'+s.id+'\x27)">x</span></div>';
+        '<span class="s-delete" onclick="event.stopPropagation();deleteSession(&#39;'+s.id+'&#39;)">x</span></div>';
     }).join('');
     document.getElementById('msgCount').textContent=sessions.length+' 个会话';
   }
