@@ -484,7 +484,18 @@ CHAT_PAGE = """<!DOCTYPE html>
   .sidebar-logo svg { width:24px; height:24px; }
   .btn-new { width:100%; padding:10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--surface); color:var(--text); cursor:pointer; font-size:.85rem; transition:.15s; text-align:left; margin-bottom:12px; }
   .btn-new:hover { background:var(--accent-light); border-color:var(--accent); }
-  .sidebar-info { font-size:.72rem; color:var(--text-dim); margin-top:auto; padding:12px; border-top:1px solid var(--border); }
+  .session-list { flex:1; overflow-y:auto; margin:8px 0; }
+.session-item { padding:10px 12px; border-radius:6px; cursor:pointer; margin:2px 0; font-size:.82rem; transition:background .12s; display:flex; align-items:center; gap:6px; }
+.session-item:hover { background:var(--hover); }
+.session-item.active { background:var(--accent-light); border:1px solid var(--accent); }
+.session-item .s-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.session-item .s-status { font-size:.62rem; padding:2px 6px; border-radius:3px; flex-shrink:0; }
+.session-item .s-status.running { background:#dbeafe; color:#1d4ed8; }
+.session-item .s-status.done { background:#d1fae5; color:#065f46; }
+.session-item .s-status.error { background:#fee2e2; color:#991b1b; }
+.session-item .s-delete { opacity:0; font-size:.7rem; color:var(--text-dim); cursor:pointer; flex-shrink:0; margin-left:4px; }
+.session-item:hover .s-delete { opacity:1; }
+.sidebar-info { font-size:.72rem; color:var(--text-dim); margin-top:auto; padding:12px; border-top:1px solid var(--border); }
   .sidebar-info span { display:block; margin:2px 0; }
   .status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:4px; }
   .status-dot.on { background:var(--success); }
@@ -602,6 +613,7 @@ CHAT_PAGE = """<!DOCTYPE html>
     DeepSoul
   </div>
   <button class="btn-new" onclick="newChat()">+ 新对话</button>
+  <div id="sessionList" class="session-list"></div>
   <div id="sessionDisplay" class="sidebar-info">
     <span><span class="status-dot on"></span> 在线</span>
     <span id="modelName" style="color:var(--text-secondary)">-</span>
@@ -664,15 +676,70 @@ function toast(t) {
     setTimeout(()=>el.remove(),2500);
   }
 
-  async function init() {
-    try{ const r = await fetch('/api/sessions',{method:'POST'}); const d = await r.json(); sessionId = d.session_id; document.getElementById('sessionDisplay').innerHTML = '<span><span class=\"status-dot on\"></span> 在线</span><span id=\"modelName\" style=\"color:var(--text-secondary)\">-</span><span id=\"msgCount\" style=\"color:var(--text-dim)\">就绪</span>'; }catch(e){}
-    connect();
-    try{ const r = await fetch('/api/status'); const d = await r.json(); if(d.llm) document.getElementById('modelName').textContent = d.llm.model || '-'; }catch(e){}
+  // ========== 会话管理 ==========
+  let sessions = [];      // {id, title, status, messages:[], serverSid:''}
+  let activeSid = null;
+
+  function loadSessions() { try{ sessions=JSON.parse(localStorage.getItem('ds_sessions')||'[]'); }catch(e){ sessions=[]; } }
+  function saveSessions() { localStorage.setItem('ds_sessions', JSON.stringify(sessions)); }
+  function getSession(id) { return sessions.find(function(s){ return s.id===id; }); }
+
+  function renderSidebar() {
+    var list=document.getElementById('sessionList');
+    list.innerHTML = sessions.map(function(s){
+      var cls=(s.id===activeSid)?' active':'';
+      var sc=s.status==='running'?'running':(s.status==='error'?'error':'done');
+      var sl=s.status==='running'?'执行中':(s.status==='error'?'出错':'完成');
+      return '<div class="session-item'+cls+'" data-sid="'+s.id+'" onclick="switchSession(''+s.id+'')">'+
+        '<span class="s-title">'+(s.title||'新对话')+'</span>'+
+        '<span class="s-status '+sc+'">'+sl+'</span>'+
+        '<span class="s-delete" onclick="event.stopPropagation();deleteSession(''+s.id+'')">x</span></div>';
+    }).join('');
+    document.getElementById('msgCount').textContent=sessions.length+' 个会话';
   }
 
+  function switchSession(id) {
+    saveCurrentMessages();
+    activeSid=id;
+    var s=getSession(id); if(!s) return;
+    sessionId=s.serverSid||'';
+    document.getElementById('welcome')?.remove();
+    document.getElementById('msgList').innerHTML=s.messages.map(function(m){return m.html;}).join('');
+    document.getElementById('sendBtn').disabled=(s.status==='running');
+    simpleMsg=null; agentCards={}; agentsRow=null;
+    renderSidebar(); scrollDown();
+  }
+
+  function saveCurrentMessages() {
+    if(!activeSid) return;
+    var s=getSession(activeSid); if(!s) return;
+    var msgs=[];
+    document.querySelectorAll('#msgList .msg').forEach(function(el){ msgs.push({html:el.outerHTML}); });
+    if(msgs.length>50) msgs=msgs.slice(-50);
+    s.messages=msgs; saveSessions();
+  }
+
+  function deleteSession(id) {
+    if(!confirm('删除此会话？')) return;
+    sessions=sessions.filter(function(s){return s.id!==id;});
+    saveSessions();
+    if(activeSid===id){ activeSid=null; document.getElementById('msgList').innerHTML='<div class="welcome" id="welcome"><div class="welcome-icon">&#9670;</div><h2>有什么我可以帮你的？</h2></div>'; }
+    renderSidebar();
+  }
+
+  function updateSessionStatus(id,status) {
+    var s=getSession(id); if(s){ s.status=status; saveSessions(); renderSidebar(); }
+  }
+
+  async function init() {
+    loadSessions(); renderSidebar();
+    if(sessions.length>0){ var last=sessions[sessions.length-1]; if(last.status!=='running') switchSession(last.id); else activeSid=last.id; }
+    connect();
+    try{ var r=await fetch('/api/status'); var d=await r.json(); if(d.llm) document.getElementById('modelName').textContent=d.llm.model||'-'; }catch(e){}
+  }
   function connect() {
     if(ws && (ws.readyState===WebSocket.CONNECTING || ws.readyState===WebSocket.OPEN)) return;
-    ws = new WebSocket(`${protocol}//${location.host}/ws/chat`);
+    ws = new WebSocket(`${protocol}//${location.host}/ws/chat`); ws.sessionId = sessionId;
     ws.onopen = () => { wsReady = true; document.getElementById('sendBtn').disabled = false; document.getElementById('input').focus(); };
     ws.onmessage = handleMessage;
     ws.onerror = () => { wsReady = false; };
@@ -726,6 +793,9 @@ function toast(t) {
         document.getElementById('sendBtn').disabled = false;
         document.getElementById('input').focus();
         document.getElementById('msgCount').textContent = document.querySelectorAll('.msg').length + ' 条消息';
+        // 标记会话完成
+        if(activeSid) updateSessionStatus(activeSid, d.f==='error'?'error':'done');
+        saveCurrentMessages();
       }
       return;
     }
@@ -785,6 +855,8 @@ function toast(t) {
       document.getElementById('input').focus();
       document.getElementById('msgCount').textContent = document.querySelectorAll('.msg').length + ' 条消息';
       agentCards = {}; agentsRow = null;
+      if(activeSid) updateSessionStatus(activeSid, 'done');
+      saveCurrentMessages();
       scrollDown(); return;
     }
 
@@ -971,19 +1043,26 @@ function toast(t) {
     }
   }
 
-  function send() {
+  async function send() {
     const input = document.getElementById('input'); const text = input.value.trim();
     if(!text) return;
     if(!ws || !wsReady || ws.readyState!==WebSocket.OPEN){ toast('连接已断开，正在重连...'); connect(); return; }
+    // 自动创建本地会话
+    if(!activeSid){ saveCurrentMessages(); var id='ds_'+Date.now(); sessions.push({id:id,title:text.slice(0,30),status:'running',messages:[],serverSid:''}); saveSessions(); activeSid=id; renderSidebar(); }
+    // 获取服务器会话 ID
+    if(!sessionId){
+      try{ var r=await fetch('/api/sessions',{method:'POST'}); var d=await r.json(); sessionId=d.session_id; var s=getSession(activeSid); if(s){s.serverSid=sessionId; saveSessions();} }catch(e){ toast('创建会话失败'); return; }
+    }
+    // 显示用户消息
     document.getElementById('welcome')?.remove();
-    const div = document.createElement('div'); div.className = 'msg user';
-    div.innerHTML = '<div class=\"msg-body\"><div class=\"msg-text\">' + renderMD(text) + '</div></div>';
+    var div=document.createElement('div'); div.className='msg user';
+    div.innerHTML='<div class="msg-body"><div class="msg-text">'+renderMD(text)+'</div></div>';
     document.getElementById('msgList').appendChild(div); scrollDown();
-    input.value = ''; input.style.height = 'auto';
-    document.getElementById('sendBtn').disabled = true;
+    input.value=''; input.style.height='auto';
+    document.getElementById('sendBtn').disabled=true;
     ws.send(JSON.stringify({message:text,session_id:sessionId}));
-  }
-  function continueStage() {
+    updateSessionStatus(activeSid, 'running');
+  }  function continueStage() {
     const awaitMsg = document.getElementById('awaitConfirmMsg');
     if(awaitMsg) awaitMsg.remove();
     if(ws && wsReady){
@@ -994,9 +1073,17 @@ function toast(t) {
 
 
   async function newChat() {
-    try{ const r = await fetch('/api/sessions',{method:'POST'}); const d = await r.json(); sessionId = d.session_id; document.getElementById('msgList').innerHTML = '<div class=\"welcome\" id=\"welcome\"><div class=\"welcome-icon\">&#9670;</div><h2>有什么我可以帮你的？</h2><p style=\"color:var(--text-dim)\">我可以操控电脑、写代码、查资料、管理项目</p></div>'; document.getElementById('msgCount').textContent = '就绪'; agentCards = {}; }catch(e){ toast('创建会话失败'); }
+    saveCurrentMessages();
+    var id = 'ds_'+Date.now();
+    sessions.push({id:id, title:'新对话', status:'done', messages:[], serverSid:''});
+    saveSessions();
+    activeSid = id;
+    document.getElementById('msgList').innerHTML = '<div class="welcome" id="welcome"><div class="welcome-icon">&#9670;</div><h2>有什么我可以帮你的？</h2><p style="color:var(--text-dim)">我可以操控电脑、写代码、查资料、管理项目</p></div>';
+    simpleMsg = null; agentCards = {}; agentsRow = null;
+    sessionId = '';
+    renderSidebar();
+    document.getElementById('sendBtn').disabled = false;
   }
-
   document.getElementById('input').addEventListener('input',function(){ this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight,140)+'px'; });
   document.getElementById('input').addEventListener('keydown',function(e){
     if((e.key==='Enter'||e.keyCode===13) && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
