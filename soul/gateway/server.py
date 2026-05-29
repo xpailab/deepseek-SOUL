@@ -1068,6 +1068,7 @@ function toast(t) {
     const input = document.getElementById('input'); const text = input.value.trim();
     if(!text) return;
     if(!ws || !wsReady || ws.readyState!==WebSocket.OPEN){ toast('连接已断开，正在重连...'); connect(); return; }
+    showSteer();  // 立即显示——不等 fetch 完成
     // 自动创建本地会话
     if(!activeSid){ saveCurrentMessages(); var id='ds_'+Date.now(); sessions.push({id:id,title:text.slice(0,30),status:'running',messages:[],serverSid:''}); saveSessions(); activeSid=id; renderSidebar(); }
     // 获取服务器会话 ID
@@ -1083,7 +1084,6 @@ function toast(t) {
     document.getElementById('sendBtn').disabled=true;
     ws.send(JSON.stringify({message:text,session_id:sessionId}));
     updateSessionStatus(activeSid, 'running');
-    showSteer();
   }
 
   function showSteer() { document.getElementById('steerRow').style.display='flex'; document.getElementById('btnStop').style.display='inline'; }
