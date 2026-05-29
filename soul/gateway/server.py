@@ -1035,11 +1035,12 @@ function toast(t) {
 
   function scrollDown() { cleanupEmptyMsgs(); const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
   function cleanupEmptyMsgs() { document.querySelectorAll('.msg').forEach(el=>{ const txt=el.querySelector('.msg-text'); if(txt && !txt.innerHTML.trim()) el.remove(); }); }
-  function onKey(e) {
+  async function onKey(e) {
     var isEnter = e.key === 'Enter' || e.keyCode === 13;
     if(isEnter && !e.shiftKey && !e.isComposing){
       e.preventDefault();
-      send();
+      e.stopPropagation();
+      await send();
     }
   }
 
@@ -1087,9 +1088,6 @@ function toast(t) {
     document.getElementById('sendBtn').disabled = false;
   }
   document.getElementById('input').addEventListener('input',function(){ this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight,140)+'px'; });
-  document.getElementById('input').addEventListener('keydown',function(e){
-    if((e.key==='Enter'||e.keyCode===13) && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
-  });
   init();
 </script>
 </body>
