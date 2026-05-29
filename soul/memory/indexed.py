@@ -231,21 +231,16 @@ class IndexedMemory:
         self,
         query: str,
         limit: int = 5,
-        use_llm: bool = True,
+        use_llm: bool = False,
     ) -> list[dict[str, Any]]:
         """语义搜索 — LLM 动态扩展 + FTS5 精确检索 + LLM 语义重排。
 
-        当 LLM 可用时:
-        1. LLM 动态扩展查询词（覆盖同义/相关表述）
-        2. FTS5 逐一精确检索
-        3. LLM 对结果语义重排
-
-        LLM 不可用时: 退回静态同义词表扩展（向后兼容）。
+        默认使用静态同义词表（0 延迟）。use_llm=True 时启用 LLM 扩展和重排。
 
         Args:
             query: 搜索查询
             limit: 返回结果数上限
-            use_llm: 是否启用 LLM 增强（默认 True）
+            use_llm: 是否启用 LLM 增强（默认 False——先保证响应速度）
         """
         # 关键词扩展（LLM 或静态）
         if use_llm and self._llm:

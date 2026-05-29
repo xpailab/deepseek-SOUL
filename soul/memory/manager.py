@@ -156,7 +156,11 @@ class MemoryManager:
 
         # Layer 3: FTS5 检索
         if query:
-            conv_results = await self.indexed.search_semantic(query, limit=3)
+            # 先用静态同义词表搜索（0 延迟）
+            conv_results = await self.indexed.search_semantic(query, limit=3, use_llm=False)
+            # 无结果且查询有意义时，用 LLM 扩展再试
+            if not conv_results and len(query) > 10:
+                conv_results = await self.indexed.search_semantic(query, limit=3, use_llm=True)
             if conv_results:
                 lines = ["[历史相关对话]"]
                 for r in conv_results:
