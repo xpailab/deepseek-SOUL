@@ -167,6 +167,22 @@ async def _interactive_loop(agent: Agent, session_id: str = ""):
             if user_input.lower() in ("/quit", "/exit", "/q"):
                 console.print("[dim]再见！[/dim]")
                 break
+            # /persona — 角色管理
+            if user_input.lower().startswith("/persona"):
+                parts = user_input.split(maxsplit=2)
+                if len(parts) == 1 or parts[1] == "list":
+                    from soul.engine.personas import PERSONAS
+                    table = Table(title="内置角色", border_style="dim")
+                    table.add_column("角色", style="bold")
+                    table.add_column("描述")
+                    for key, p in PERSONAS.items():
+                        table.add_row(f"{p['emoji']} {p['name']}", p['description'][:60])
+                    console.print(table)
+                elif parts[1] == "create" and len(parts) == 3:
+                    # /persona create <name>
+                    console.print(f"[yellow]对话式创建角色 '{parts[2]}'——请直接在对话中描述:[/yellow]")
+                    console.print(f"[dim]例如: 帮我创建一个叫{parts[2]}的角色，擅长xxx[/dim]")
+                continue
             # /s 消息 — 注入到正在运行的任务中
             if user_input.lower().startswith("/s "):
                 steer_text = user_input[3:].strip()

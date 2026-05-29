@@ -1,0 +1,44 @@
+---
+name: persona_creator
+version: 1.0.0
+description: 对话式创建/管理 AI 角色——用户说"帮我创建一个xxx角色"时自动触发
+type: bundled
+triggers:
+  - 创建角色
+  - 新建角色
+  - 添加角色
+  - 角色
+  - persona
+  - 身份
+  - 帮我创建一个
+---
+
+# 角色创建
+
+## 识别创建请求
+当用户说"帮我创建一个xxx角色"或"加一个xxx身份"时，你是在创建新的 AI 角色。
+
+## 角色结构
+每个角色定义在 `soul/engine/personas.py` 的 PERSONAS 字典中，包含：
+```python
+"key": {
+    "name": "角色名",
+    "emoji": "表情符号",
+    "description": "一句话描述",
+    "skills": ["技能1", "技能2", ...],
+    "context": "- 行为规则1\n- 行为规则2\n...",
+    "keywords": ["触发词1", "触发词2", ...],
+}
+```
+
+## 创建步骤
+1. 与用户确认：角色名、擅长领域、典型使用场景
+2. 用 file edit 在 PERSONAS 字典的 `}` 前插入新角色定义
+3. 重启 deepsoul 或重新加载使角色生效
+4. 告知用户角色已创建
+
+## 注意事项
+- emoji 选择一个能代表该职业的表情符号
+- keywords 覆盖中英文触发词，至少 6-8 个
+- context 写 3-4 条具体的行为规则，不要太泛
+- skills 写 3-5 条具体能力，不是泛泛的"编程"
