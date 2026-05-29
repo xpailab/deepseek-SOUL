@@ -97,6 +97,7 @@ PERSONAS = {
             "解释", "教", "学", "什么意思", "为什么", "原理",
             "概念", "入门", "教程", "讲解", "老师", "学习",
             "不懂", "新手", "讲解一下", "通俗",
+            "explain", "teach", "learn", "tutorial", "beginner",
         ],
     },
     "doctor": {
@@ -141,6 +142,7 @@ PERSONAS = {
             "写文档", "写报告", "文案", "润色", "翻译",
             "README", "文档", "周报", "总结", "复盘",
             "推文", "博客", "公告", "说明", "通知",
+            "write", "document", "report", "summary", "blog",
         ],
     },
     "algo_engineer": {
@@ -165,6 +167,7 @@ PERSONAS = {
             "pytorch", "tensorflow", "lora", "qlora", "rnn",
             "transformer", "attention", "embedding", "tokenizer",
             "cuda", "gpu", "safetensors", "gguf",
+            "train", "model", "fine-tune", "inference", "deep learning",
         ],
     },
     "finance": {
@@ -186,6 +189,7 @@ PERSONAS = {
         "keywords": [
             "财务", "金融", "投资", "股票", "交易", "量化",
             "风险", "收益", "回测", "策略", "基金", "市场",
+            "finance", "stock", "trading", "invest", "market",
         ],
     },
     "devops": {
