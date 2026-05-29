@@ -343,8 +343,42 @@ cli.py → agent.py → lane_queue.py → session.py
                  → memory/manager.py → frozen/procedural/indexed/predictive/user_model/error_kb
                  → prompt/builder.py → compressor.py
                  → engine/working_memory.py → verifier.py → checkpoint.py
+                 → engine/personas.py (10 built-in identities)
                  → llm/registry.py → deepseek.py → base.py
                  → tools/registry.py → guardrails.py → retry.py → classifier.py
                  → safety/sandbox.py → auditor.py
                  → types.py
 ```
+
+## 五、增强功能
+
+### 角色系统（personas.py）
+10 种内置身份，根据任务关键词自动匹配：
+- 🧪 测试工程师 / 💻 开发 / 📊 数据分析师 / 📚 老师 / 🩺 诊断专家
+- ✍️ 文案 / 🧠 算法工程师 / 💰 金融分析师 / ⚙️ DevOps / 🤖 通用助手
+- CLI: `/persona list` 查看，`/persona create <name>` 创建
+- 对话式创建: "帮我创建一个xxx角色" → agent 自动编辑 personas.py
+- 角色上下文在首轮注入 dynamic prompt，不破坏 prefix cache
+
+### 主动学习与自我进化
+每次任务完成 → 自动提取教训（错误、发现、排除方向）
+- 教训存入 `~/.soul/workspace/lessons.jsonl`（100 条上限）
+- 同一错误模式 ≥2 次 → 自动生成防御规则，下次任务前置警告
+- 新会话注入 L1 结构化日报（最近 1500 字符）+ 相关教训
+- L1 状态标记: ✓ 完成 / ○ 未完成（压缩优先保留）/ ✗ 失败
+
+### 缓存优化
+- static/dynamic 分离: system prompt 永远相同 → 100% 缓存命中
+- dynamic 内容放消息末尾 → 消息历史前缀全部缓存
+- 多轮极简 prompt: 43t 替代 2100t
+- L3 LLM 查询扩展默认关闭（use_llm=False），仅关键词无结果时启用
+
+### 打断与插入
+- CLI: Ctrl+C 打断当前执行，`/s <message>` 注入指令到运行中任务
+- Web: 执行时出现停止按钮 + 插入指令输入框
+- WebSocket disconnect 自动关闭异步生成器，防止后台空跑
+
+### 多会话侧边栏（Web UI）
+- 左侧会话列表，localStorage 持久化
+- 每条会话显示标题、状态（执行中/完成/出错）
+- 点击切换、删除，刷新不丢失
