@@ -635,7 +635,7 @@ CHAT_PAGE = """<!DOCTYPE html>
     <div class="input-inner">
       <div class="input-wrap">
         <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" onkeydown="onKey(event)"></textarea>
-        <button id="sendBtn" onclick="send()" title="发送">
+        <button id="sendBtn" onclick="send();return false;" title="发送">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
@@ -1039,7 +1039,6 @@ function toast(t) {
     var isEnter = e.key === 'Enter' || e.keyCode === 13;
     if(isEnter && !e.shiftKey && !e.isComposing){
       e.preventDefault();
-      e.stopPropagation();
       await send();
     }
   }
