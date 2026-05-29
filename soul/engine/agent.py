@@ -1203,6 +1203,20 @@ class Agent:
                 self.checkpoint_mgr.mark_complete(session_id)
             else:
                 self._save_checkpoint(session_id, user_message)
+
+            # L3 自动压缩——每天跑一次，清理 30 天前的旧对话
+            try:
+                import os as _os
+                compact_marker = Path(self.config.memory.workspace_dir).expanduser() / ".last_compact"
+                now = time.time()
+                last = 0.0
+                if compact_marker.exists():
+                    last = float(compact_marker.read_text(encoding="utf-8").strip() or "0")
+                if now - last > 86400:  # 24 小时
+                    await self.memory.indexed.compact_old_sessions(30)
+                    compact_marker.write_text(str(now), encoding="utf-8")
+            except Exception:
+                pass
             self.error_kb.save()
 
         await self.sessions.update_state(session_id, AgentState.IDLE)
