@@ -36,12 +36,24 @@ deepsoul gateway --port 18789
 # All platforms share the same session state
 ```
 
-### Self-Evolution
-After each task, the agent analyzes its execution:
-- **Learns skills**: 3+ similar successful tasks → auto-generates SKILL.md → reused next time
-- **Gets smarter**: GEPA evolution engine continuously optimizes prompts → accuracy ↑, token cost ↓
-- **Remembers preferences**: Learns your preferred languages, frameworks, communication style
-- **Predicts needs**: Detects daily patterns (e.g. deploy at 9am) → proactively prepares checklists
+### Self-Evolution — Actually Gets Smarter
+After each task, the agent **actively learns** and applies lessons to future tasks:
+- **Lesson extraction**: Automatically extracts errors, findings, and fixes from every task
+- **Defense rules**: Same error pattern ≥2 times → auto-generates proactive warnings for future tasks
+- **Structured journaling**: Rich L1 memory entries with timestamps, file lists, findings, and status
+- **Active coaching**: New sessions auto-inject relevant past lessons — agent warns you before you repeat mistakes
+- **Skill generation**: 3+ similar successful tasks → auto-generates SKILL.md → reused next time
+- **GEPA evolution**: Genetic-Pareto optimization continuously improves prompts → accuracy ↑, token cost ↓
+
+### Persona System — 10 Built-in Identities
+Auto-detects the right identity for every task and adapts its behavior:
+```
+You: "Write pytest tests for this module" → 🧪 Test Engineer
+You: "Analyze sales trends"              → 📊 Data Analyst
+You: "Explain recursion to a beginner"    → 📚 Teacher
+You: "Deploy to Kubernetes"               → ⚙️ DevOps
+```
+Each persona brings its own skills, context rules, and expertise. Say "create a persona for..." to add custom roles.
 
 ### Train Your Own Agent
 ```bash
@@ -133,14 +145,20 @@ Three-layer evolution:
 
 ---
 
-## Memory System — 4 Layers
+## Memory System — 4 Layers + Active Learning
 
-| Layer | Function | Example |
-|-------|----------|---------|
-| L1 Frozen | Long-term memory, persisted to file | "User prefers Python, dislikes Java" |
-| L2 Procedural | Auto-learned reusable workflows | "7 standard steps to deploy Django" |
-| L3 FTS5 Index | Full-text search over conversation history | "That database migration discussion last week" |
-| L4 Predictive | **Anticipates your next move** | "You always run tests after editing code. Run now?" |
+| Layer | Function | Enhancement |
+|-------|----------|-------------|
+| L1 Frozen | Structured journal with timestamps, file lists, findings | Pending tasks (○) preserved, done tasks auto-compressed |
+| L2 Procedural | Auto-learned skills + 10 persona-specific skill sets | Persona detection auto-loads relevant skills |
+| L3 FTS5 Index | Full-text search with LLM semantic expansion | Smart fallback: static search first (0ms), LLM only when needed |
+| L4 Predictive | Behavior prediction from task patterns | — |
+
+**New — Active Learning Pipeline**:
+- Each task → structured journal entry + lesson extraction
+- Repeated errors → auto defense rules  
+- New session → injects recent context + relevant past lessons
+- Project file manifest persisted across sessions
 
 Layer 4 is DeepSoul's innovation: from passive recall to proactive prediction.
 
