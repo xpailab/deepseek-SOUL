@@ -1062,7 +1062,9 @@ function toast(t) {
     document.getElementById('sendBtn').disabled=true;
     ws.send(JSON.stringify({message:text,session_id:sessionId}));
     updateSessionStatus(activeSid, 'running');
-  }  function continueStage() {
+  }
+
+  function continueStage() {
     const awaitMsg = document.getElementById('awaitConfirmMsg');
     if(awaitMsg) awaitMsg.remove();
     if(ws && wsReady){
