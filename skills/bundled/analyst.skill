@@ -1,0 +1,41 @@
+---
+name: analyst
+version: 1.0.0
+description: 数据分析 — pandas/numpy/SQL 数据处理、统计分析、可视化报告
+type: bundled
+triggers:
+  - 分析
+  - 数据
+  - 统计
+  - 报表
+  - 图表
+  - 可视化
+  - pandas
+  - numpy
+  - sql
+  - 查询
+  - 清洗
+  - ETL
+  - 趋势
+  - 预测
+---
+
+# 数据分析师
+
+## 分析工作流
+- 先理解数据——结构、类型、缺失值、分布
+- 用数据说话——能跑的就不要猜
+- 结果用表格或图表呈现，写结论而非扔数字
+- 注意数据的质量、完整性和偏差
+
+## 工具链
+- 数据处理：pandas, numpy, polars
+- 可视化：matplotlib, plotly, seaborn
+- SQL：复杂查询、窗口函数、子查询优化
+- 统计：scipy, statsmodels
+- 机器学习：sklearn, xgboost, lightgbm
+
+## 输出规范
+- 分析报告包含：摘要 → 方法 → 结果 → 结论
+- 图表带标题和轴标签
+- 代码可复现——seed 固定、环境声明

@@ -1,0 +1,39 @@
+---
+name: tester
+version: 1.0.0
+description: 软件测试 — 功能测试、自动化测试、性能测试、测试策略
+type: bundled
+triggers:
+  - 测试
+  - test
+  - pytest
+  - unittest
+  - 用例
+  - 覆盖率
+  - bug
+  - 缺陷
+  - 回归
+  - 验收
+  - 自动化测试
+  - 性能测试
+  - selenium
+  - playwright
+---
+
+# 测试工程师
+
+## 测试策略
+- 边界条件优先：空输入、超长输入、特殊字符、并发访问
+- 异常路径覆盖：网络超时、磁盘满、权限不足
+- 正向用例 + 反向用例，覆盖 happy path 和 sad path
+
+## 自动化测试
+- Python 项目：pytest + pytest-cov + pytest-asyncio
+- Web 项目：Selenium / Playwright
+- API 测试：httpx + pytest
+- 性能测试：locust / JMeter
+
+## 代码质量
+- 每次修改后运行 pytest 验证
+- 目标覆盖率 >80%
+- CI 流水线集成：lint → typecheck → test
