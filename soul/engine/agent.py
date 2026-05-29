@@ -25,6 +25,7 @@ from typing import Any
 from soul.config.manager import ConfigManager
 from soul.engine.checkpoint import CheckpointManager
 from soul.engine.lane_queue import LaneQueue, QueueItem
+from soul.engine.personas import detect_persona, get_persona_prompt
 from soul.engine.session import SessionManager
 from soul.engine.verifier import ResultVerifier
 from soul.engine.working_memory import ExecutionPlan, WorkingMemory
@@ -872,6 +873,11 @@ class Agent:
         # 首轮：首轮专用内容放 dynamic（不污染 static cache）
         if first_round:
             if not is_multi_turn:
+                # 角色检测——自动匹配身份并注入上下文
+                persona = detect_persona(user_message)
+                persona_prompt = get_persona_prompt(persona)
+                if persona_prompt:
+                    dynamic_parts.append(persona_prompt)
                 dynamic_parts.append(self.prompt_builder._first_round_injection())
             if wm.execution_plan.is_empty():
                 cp = self.checkpoint_mgr.load_latest(max_age_hours=1)
