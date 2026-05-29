@@ -31,6 +31,35 @@ def _fmt_tool_result(tr) -> str:
     return tr.error or "执行失败"
 
 
+async def _safe_ws_stream(agent, txt: str, sid: str, ws, system_prompt: str = "") -> None:
+    """WebSocket 流式输出——断开时自动关闭异步生成器，防止后台空跑烧 token。"""
+    gen = agent.chat_stream(txt, session_id=sid, system_prompt=system_prompt)
+    try:
+        async for chunk in gen:
+            d = {}
+            if chunk.content:
+                d["c"] = chunk.content
+            if chunk.tool_call:
+                d["t"] = chunk.tool_call.name
+                d["args"] = str(getattr(chunk.tool_call, "arguments", ""))[:200]
+            if chunk.tool_result:
+                d["r"] = {"ok": chunk.tool_result.success, "text": _fmt_tool_result(chunk.tool_result)}
+            if chunk.finish_reason:
+                d["f"] = chunk.finish_reason
+            if d:
+                try:
+                    await ws.send_json(d)
+                except Exception:
+                    break  # WS 断开，停止发送，退出循环
+    finally:
+        # 关键：关闭异步生成器，释放 Agent 资源
+        if hasattr(gen, 'aclose'):
+            try:
+                await gen.aclose()
+            except Exception:
+                pass
+
+
 class Gateway:
     """统一消息网关。"""
 
@@ -262,26 +291,15 @@ class Gateway:
                             from soul.engine.parallel import ParallelAgent, _llm_classify
                             base_cfg = self.agent.config
 
-                            # LLM 判断复杂度
                             adapter = self.agent.llm.get(base_cfg.llm)
                             difficulty = await _llm_classify(txt, adapter)
 
                             if difficulty <= 1:
-                                # 简单对话 → 直接回复
+                                await _safe_ws_stream(self.agent, txt, sid, ws)
                                 try:
-                                    async for chunk in self.agent.chat_stream(txt, session_id=sid):
-                                        d = {}
-                                        if chunk.content: d["c"] = chunk.content
-                                        if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
-                                        if chunk.tool_result:
-                                            d["r"] = {"ok": chunk.tool_result.success,
-                                                       "text": _fmt_tool_result(chunk.tool_result)}
-                                        if chunk.finish_reason: d["f"] = chunk.finish_reason
-                                        if d: await ws.send_json(d)
-                                except Exception as e:
-                                    await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
-                                # 确保流结束标记
-                                await ws.send_json({"f": "stop"})
+                                    await ws.send_json({"f": "stop"})
+                                except Exception:
+                                    pass
                             elif difficulty >= 4:
                                 # 复杂项目 → 分阶段执行
                                 try:
@@ -317,22 +335,26 @@ class Gateway:
                                             })
 
                                             stage_content = ""
-                                            async for chunk in self.agent.chat_stream(
-                                                txt,  # 原始任务
-                                                session_id=sid,
-                                                system_prompt=stage_prompt,
-                                            ):
-                                                d = {"stage_id": stage.id}
-                                                if chunk.content:
-                                                    d["c"] = chunk.content
-                                                    stage_content += chunk.content
-                                                if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
-                                                if chunk.tool_result:
-                                                    d["r"] = {"ok": chunk.tool_result.success,
-                                                               "text": _fmt_tool_result(chunk.tool_result)}
-                                                if chunk.finish_reason: d["f"] = chunk.finish_reason
-                                                if len(d) > 1:
-                                                    await ws.send_json(d)
+                                            gen = self.agent.chat_stream(txt, session_id=sid, system_prompt=stage_prompt)
+                                            try:
+                                                async for chunk in gen:
+                                                    d = {"stage_id": stage.id}
+                                                    if chunk.content:
+                                                        d["c"] = chunk.content
+                                                        stage_content += chunk.content
+                                                    if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
+                                                    if chunk.tool_result:
+                                                        d["r"] = {"ok": chunk.tool_result.success, "text": _fmt_tool_result(chunk.tool_result)}
+                                                    if chunk.finish_reason: d["f"] = chunk.finish_reason
+                                                    if len(d) > 1:
+                                                        try:
+                                                            await ws.send_json(d)
+                                                        except Exception:
+                                                            break
+                                            finally:
+                                                if hasattr(gen, 'aclose'):
+                                                    try: await gen.aclose()
+                                                    except Exception: pass
 
                                             # 解析阶段完成结果
                                             summary, artifacts = parse_stage_completion(stage_content)
@@ -371,16 +393,7 @@ class Gateway:
                                             "message": "所有阶段已完成！",
                                         })
                                     else:
-                                        # 不需要分阶段，使用普通模式
-                                        async for chunk in self.agent.chat_stream(txt, session_id=sid):
-                                            d = {}
-                                            if chunk.content: d["c"] = chunk.content
-                                            if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
-                                            if chunk.tool_result:
-                                                d["r"] = {"ok": chunk.tool_result.success,
-                                                           "text": _fmt_tool_result(chunk.tool_result)}
-                                            if chunk.finish_reason: d["f"] = chunk.finish_reason
-                                            if d: await ws.send_json(d)
+                                        await _safe_ws_stream(self.agent, txt, sid, ws)
 
                                 except Exception as e:
                                     await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
