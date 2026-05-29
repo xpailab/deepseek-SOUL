@@ -262,19 +262,26 @@ class Agent:
                 actual_rounds += 1
                 await self.sessions.update_state(session_id, AgentState.EXECUTING)
 
-                # 每轮注入最新工作记忆
+                # 每轮注入最新工作记忆——dynamic 放消息末尾（不破坏 prefix cache）
                 live_static, live_dynamic = self._build_enhanced_prompt(
                     base_system_prompt, user_message, first_round=False
                 )
-                live_prompt = live_static + "\n\n" + live_dynamic if live_dynamic else live_static
+                dyn_msg = None
+                if live_dynamic:
+                    dyn_msg = Message(role=MessageRole.SYSTEM, content=live_dynamic)
+                    current_messages.append(dyn_msg)
 
                 response = await self.llm.chat(
                     current_messages,
                     tools=tools or self.tools.to_api_schemas(),
-                    system_prompt=live_prompt,
+                    system_prompt=live_static,
                     config=config,
                     provider=config.provider,
                 )
+
+                # 清理本轮注入的 dynamic 消息（不污染历史）
+                if dyn_msg is not None:
+                    current_messages.pop()
 
                 if not response.tool_calls:
                     if response.finish_reason == "length":
@@ -439,12 +446,15 @@ class Agent:
                 live_static, live_dynamic = self._build_enhanced_prompt(
                     base_system_prompt, user_message, first_round=False
                 )
-                live_prompt = live_static + "\n\n" + live_dynamic if live_dynamic else live_static
+                dyn_msg = None
+                if live_dynamic:
+                    dyn_msg = Message(role=MessageRole.SYSTEM, content=live_dynamic)
+                    current_messages.append(dyn_msg)
 
                 async for chunk in self.llm.chat_stream(
                     current_messages,
                     tools=tools or self.tools.to_api_schemas(),
-                    system_prompt=live_prompt,
+                    system_prompt=live_static,
                     config=config,
                     provider=config.provider,
                 ):
@@ -465,6 +475,10 @@ class Agent:
                     if chunk.finish_reason:
                         last_finish = chunk.finish_reason
                     yield chunk
+
+                # 清理本轮注入的 dynamic 消息
+                if dyn_msg is not None:
+                    current_messages.pop()
 
                 # 无工具调用 → 检查是否需要继续
                 if not round_tool_calls:
@@ -1058,17 +1072,20 @@ class Agent:
                 base_system_prompt, user_message, first_round=True,
                 is_multi_turn=False,
             )
-            enhanced_prompt = enhanced_static + "\n\n" + enhanced_dynamic if enhanced_dynamic else enhanced_static
             self.working_memory.clear()
 
         user_msg = Message(role=MessageRole.USER, content=user_message)
+        msgs_for_prompt = list(history) + [user_msg]
+        # dynamic 内容作为消息末尾——不污染 prefix cache
+        if enhanced_dynamic:
+            msgs_for_prompt.append(Message(role=MessageRole.SYSTEM, content=enhanced_dynamic))
         full_messages = self.prompt_builder.build_messages(
-            history + [user_msg],
-            system_prompt=enhanced_prompt,
+            msgs_for_prompt,
+            system_prompt=enhanced_static,
             tools=tools or self.tools.to_api_schemas(),
         )
         return {
-            "base_system_prompt": base_system_prompt,
+            "base_system_prompt": enhanced_static,  # 纯 static，后续轮次复用
             "current_messages": list(full_messages),
             "saved_len": len(full_messages),
             "config": self.config.llm,
