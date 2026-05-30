@@ -831,6 +831,15 @@ function toast(t) {
         scrollDown();
       }
       if(d.c){
+        // 后端确认的插入指令 → 特殊样式展示
+        if(d.c.indexOf('[注入指令:')===0 || d.c.indexOf('\n[注入指令:')>=0){
+          var steerDiv = document.createElement('div');
+          steerDiv.className = 'msg steer-confirm';
+          steerDiv.innerHTML = '<div class="msg-body"><div class="msg-text" style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:5px 10px;font-size:.78rem;color:#92400e;margin:4px 0;">✅ 模型已收到: '+escHtml(d.c.replace(/^\\n?\\[注入指令:\\s*/,'').replace(/\\n$/,''))+'</div></div>';
+          document.getElementById('msgList').appendChild(steerDiv);
+          simpleMsg = null;  // 让后续回复另起消息
+          scrollDown();
+        } else {
         if(!simpleMsg){
           document.getElementById('welcome')?.remove();
           simpleMsg = document.createElement('div'); simpleMsg.className = 'msg assistant';
@@ -845,6 +854,7 @@ function toast(t) {
         }
         var cur = simpleMsg.querySelector('.msg-text').getAttribute('data-raw') || ''; cur += d.c; simpleMsg.querySelector('.msg-text').setAttribute('data-raw', cur); simpleMsg.querySelector('.msg-text').innerHTML = renderMD(cur);
         scrollDown();
+        }
       }
       if(d.t){
         if(!simpleMsg){
@@ -1155,6 +1165,12 @@ function toast(t) {
     if(!txt || !ws || !wsReady) return;
     ws.send(JSON.stringify({message:txt, session_id:sessionId, action:'steer'}));
     document.getElementById('steerInput').value = '';
+    // 立刻在对话区显示插入的指令气泡
+    document.getElementById('welcome')?.remove();
+    var div=document.createElement('div'); div.className='msg steer';
+    div.innerHTML='<div class="msg-body"><div class="msg-text" style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 14px;font-size:.84rem;"><span style="font-weight:700;color:#92400e;">📩 插入指令</span><div style="color:#78350f;margin-top:3px;">'+escHtml(txt)+'</div></div></div>';
+    document.getElementById('msgList').appendChild(div); scrollDown();
+    simpleMsg = null;  // 重置，让后续模型回复另起一条消息
     toast('已插入: '+txt.slice(0,30));
   }
   function stopAgent() {
