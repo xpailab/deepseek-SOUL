@@ -130,40 +130,43 @@ class OpenAIAdapter(BaseAdapter):
         if tools:
             payload["tools"] = self._tools_to_api_format(tools)
 
-        async with client.stream("POST", "/chat/completions", json=payload) as resp:
-            resp.raise_for_status()
-            tool_buf: dict[int, dict[str, Any]] = {}
+        had_content = False
+        try:
+            async with client.stream("POST", "/chat/completions", json=payload) as resp:
+                resp.raise_for_status()
+                tool_buf: dict[int, dict[str, Any]] = {}
 
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    yield StreamChunk(finish_reason="stop")
-                    break
-                try:
-                    data = json.loads(data_str)
-                    delta = data["choices"][0].get("delta", {})
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        had_content = True
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        delta = data["choices"][0].get("delta", {})
 
-                    if "content" in delta and delta["content"]:
-                        yield StreamChunk(content=delta["content"])
+                        if "content" in delta and delta["content"]:
+                            had_content = True
+                            yield StreamChunk(content=delta["content"])
 
-                    if "tool_calls" in delta:
-                        for tc in delta["tool_calls"]:
-                            idx = tc.get("index", 0)
-                            if idx not in tool_buf:
-                                tool_buf[idx] = {"id": "", "name": "", "arguments": ""}
-                            if "id" in tc:
-                                tool_buf[idx]["id"] = tc["id"]
-                            if "function" in tc:
-                                if "name" in tc["function"]:
-                                    tool_buf[idx]["name"] += tc["function"]["name"]
-                                if "arguments" in tc["function"]:
-                                    tool_buf[idx]["arguments"] += tc["function"]["arguments"]
+                        if "tool_calls" in delta:
+                            had_content = True
+                            for tc in delta["tool_calls"]:
+                                idx = tc.get("index", 0)
+                                if idx not in tool_buf:
+                                    tool_buf[idx] = {"id": "", "name": "", "arguments": ""}
+                                if "id" in tc:
+                                    tool_buf[idx]["id"] = tc["id"]
+                                if "function" in tc:
+                                    if "name" in tc["function"]:
+                                        tool_buf[idx]["name"] += tc["function"]["name"]
+                                    if "arguments" in tc["function"]:
+                                        tool_buf[idx]["arguments"] += tc["function"]["arguments"]
 
-                    choice = data["choices"][0]
-                    if "finish_reason" in choice:
-                        if choice.get("finish_reason"):
+                        choice = data["choices"][0]
+                        if "finish_reason" in choice and choice.get("finish_reason"):
                             for idx, buf in tool_buf.items():
                                 try:
                                     args = json.loads(buf["arguments"])
@@ -180,9 +183,33 @@ class OpenAIAdapter(BaseAdapter):
                                 finish_reason=choice["finish_reason"],
                                 usage=data.get("usage"),
                             )
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
-        # 确保流结束时总是发送finish标记
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+        except Exception as e:
+            had_content = False
+
+        # 流式无内容 → 回退到非流式（本地模型可能不支持 streaming）
+        if not had_content:
+            try:
+                payload["stream"] = False
+                resp = await client.post("/chat/completions", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                choice = data["choices"][0]
+                msg = choice.get("message", {})
+                content = msg.get("content", "") or ""
+                if content:
+                    yield StreamChunk(content=content)
+                yield StreamChunk(
+                    finish_reason=choice.get("finish_reason", "stop"),
+                    usage=data.get("usage"),
+                )
+            except Exception:
+                yield StreamChunk(
+                    content="[本地模型请求失败——请确认 LM Studio 的 API 地址和模型名是否正确]",
+                    finish_reason="error",
+                )
+
         yield StreamChunk(finish_reason="stop")
 
     async def close(self) -> None:
