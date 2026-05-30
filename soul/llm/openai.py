@@ -79,7 +79,9 @@ class OpenAIAdapter(BaseAdapter):
                 await asyncio.sleep(2 ** attempt)
 
         choice = data["choices"][0]
-        content = choice["message"].get("content", "") or ""
+        msg = choice.get("message", {})
+        content = msg.get("content", "") or msg.get("reasoning_content", "") or ""
+        reasoning_content = msg.get("reasoning_content", "")
         usage = data.get("usage", {})
 
         tool_calls = []
@@ -102,6 +104,7 @@ class OpenAIAdapter(BaseAdapter):
             content=content,
             tool_calls=tool_calls,
             finish_reason=choice.get("finish_reason", "stop"),
+            reasoning_content=reasoning_content,
             usage={
                 "prompt_tokens": usage.get("prompt_tokens", 0),
                 "completion_tokens": usage.get("completion_tokens", 0),
@@ -147,9 +150,15 @@ class OpenAIAdapter(BaseAdapter):
                         data = json.loads(data_str)
                         delta = data["choices"][0].get("delta", {})
 
-                        if "content" in delta and delta["content"]:
+                        # 某些模型（Qwen3.6 thinking 等）把输出放在 reasoning_content
+                        raw_content = delta.get("content", "")
+                        reasoning = delta.get("reasoning_content", "")
+                        if raw_content:
                             had_content = True
-                            yield StreamChunk(content=delta["content"])
+                            yield StreamChunk(content=raw_content)
+                        elif reasoning:
+                            had_content = True
+                            yield StreamChunk(content=reasoning, reasoning_content=reasoning)
 
                         if "tool_calls" in delta:
                             had_content = True
@@ -197,7 +206,7 @@ class OpenAIAdapter(BaseAdapter):
                 data = resp.json()
                 choice = data["choices"][0]
                 msg = choice.get("message", {})
-                content = msg.get("content", "") or ""
+                content = msg.get("content", "") or msg.get("reasoning_content", "") or ""
                 if content:
                     yield StreamChunk(content=content)
                 yield StreamChunk(
