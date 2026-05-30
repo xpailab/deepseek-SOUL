@@ -92,21 +92,12 @@ def chat(
 
 
 async def _stream_chat(agent: Agent, user_input: str, session_id: str) -> str:
-    """流式对话——支持中断和 steer 注入。"""
+    """流式对话。"""
     full_response = ""
-    steer_text = None
 
     async def _run():
         nonlocal full_response
         async for chunk in agent.chat_stream(user_input, session_id=session_id):
-            nonlocal steer_text
-            # 检查 steer 注入
-            if steer_text:
-                agent.lane_queue._active_runs.add(session_id)
-                cb = agent.lane_queue._steer_callbacks.get(session_id)
-                if cb:
-                    await cb(steer_text)
-                steer_text = None
             if chunk.content:
                 console.print(chunk.content, end="")
                 full_response += chunk.content
@@ -187,13 +178,19 @@ async def _interactive_loop(agent: Agent, session_id: str = ""):
             if user_input.lower().startswith("/s "):
                 steer_text = user_input[3:].strip()
                 if _current_task and not _current_task.done():
-                    agent.lane_queue._active_runs.add(session_id)
-                    cb = agent.lane_queue._steer_callbacks.get(session_id)
-                    if cb:
-                        await cb(steer_text)
+                    ok = await agent.lane_queue.trigger_steer(session_id, steer_text)
+                    if ok:
                         console.print(f"[yellow]📩 已注入: {steer_text[:50]}[/yellow]")
                     else:
                         console.print("[dim]当前没有运行中的任务[/dim]")
+                else:
+                    console.print("[dim]当前没有运行中的任务[/dim]")
+                continue
+            # /stop — 停止当前任务
+            if user_input.lower() == "/stop":
+                if _current_task and not _current_task.done():
+                    await agent.lane_queue.trigger_interrupt(session_id)
+                    console.print("[yellow]⏸️ 已发送停止信号[/yellow]")
                 else:
                     console.print("[dim]当前没有运行中的任务[/dim]")
                 continue
@@ -231,17 +228,33 @@ def run(
         config.llm.model = model
 
     async def _run():
+        import signal
         agent = Agent(config=config)
         await agent.initialize()
 
+        sess = await agent.sessions.get_or_create()
+        sid = sess.session_id
+
+        def _on_sigint(sig, frame):
+            asyncio.ensure_future(agent.lane_queue.trigger_interrupt(sid))
+
+        prev = signal.signal(signal.SIGINT, _on_sigint)
+
         console.print(f"[bold]任务:[/bold] {task}")
         console.print(f"[bold blue]DeepSoul ({config.llm.model}):[/bold blue]")
+        console.print("[dim](Ctrl+C 中断)[/dim]")
 
         full = ""
-        async for chunk in agent.chat_stream(task):
-            if chunk.content:
-                console.print(chunk.content, end="")
-                full += chunk.content
+        try:
+            async for chunk in agent.chat_stream(task, session_id=sid):
+                if chunk.content:
+                    console.print(chunk.content, end="")
+                    full += chunk.content
+        except KeyboardInterrupt:
+            console.print("\n[yellow]⏸️ 已中断[/yellow]")
+        finally:
+            signal.signal(signal.SIGINT, prev)
+
         console.print()
 
         if output:

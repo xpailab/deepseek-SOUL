@@ -211,6 +211,96 @@ class Agent:
         self._initialized = True
         self._running = True
 
+    async def _chat_prepare(
+        self, user_message: str, session_id: str,
+        system_prompt: str, tools: list[dict] | None,
+        state: AgentState = AgentState.THINKING,
+    ) -> dict | None:
+        """chat/chat_stream 公共准备阶段——初始化、会话、队列、上下文构建。
+
+        Returns None 表示系统繁忙，调用者应返回错误提示。
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        session = await self.sessions.get_or_create(session_id=session_id)
+        session_id = session.session_id
+
+        item = QueueItem(
+            id=f"msg_{int(time.time() * 1000)}",
+            session_id=session_id,
+            prompt=user_message,
+            mode=QueueMode.ADAPTIVE,
+        )
+
+        result = await self.lane_queue.enqueue(item)
+        acquired = False
+
+        if result not in ("steered", "steered_and_queued"):
+            item = await self.lane_queue.dequeue(session_id)
+            if item is None:
+                return None
+            acquired = True
+
+        ctx = await self._setup_chat_context(user_message, session_id, system_prompt, tools, state)
+
+        return {
+            "session_id": session_id,
+            "base_system_prompt": ctx["base_system_prompt"],
+            "current_messages": ctx["current_messages"],
+            "saved_len": ctx["saved_len"],
+            "config": ctx["config"],
+            "acquired": acquired,
+        }
+
+    async def _process_round_results(
+        self,
+        tool_calls: list[ToolCall],
+        session_id: str,
+        response_content: str,
+        reasoning_content: str,
+        user_message: str,
+        all_tool_results: list[ToolResult],
+        consecutive_fails: int,
+        max_total_tools: int,
+        current_messages: list[Message],
+    ) -> tuple[int, list[ToolResult]]:
+        """chat/chat_stream 公共轮次处理——执行工具、更新工作记忆、构建消息。
+
+        Returns (consecutive_fails, round_results).
+        """
+        round_results: list[ToolResult] = []
+        for tc in tool_calls:
+            if len(all_tool_results) >= max_total_tools:
+                break
+            tr = await self._execute_tool(tc, session_id)
+            round_results.append(tr)
+            all_tool_results.append(tr)
+            if tr.success:
+                consecutive_fails = 0
+            else:
+                consecutive_fails += 1
+
+        self._update_working_memory(response_content, round_results, user_message)
+
+        assistant_msg = Message(
+            role=MessageRole.ASSISTANT,
+            content=response_content,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
+        )
+        current_messages.append(assistant_msg)
+
+        for tr in round_results:
+            tool_msg = Message(
+                role=MessageRole.TOOL,
+                content=str(tr.result)[:4000] if tr.success else (tr.error or "执行失败"),
+                metadata={"tool_call_id": tr.call_id, "tool_name": tr.name},
+            )
+            current_messages.append(tool_msg)
+
+        return consecutive_fails, round_results
+
     async def chat(
         self,
         user_message: str,
@@ -219,47 +309,26 @@ class Agent:
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
         """非流式对话 — 发送消息并获取完整回复。"""
-        if not self._initialized:
-            await self.initialize()
+        prepared = await self._chat_prepare(user_message, session_id, system_prompt, tools)
+        if prepared is None:
+            return "系统繁忙，请稍后重试"
 
-        session = await self.sessions.get_or_create(session_id=session_id)
-        session_id = session.session_id
+        session_id = prepared["session_id"]
+        base_system_prompt = prepared["base_system_prompt"]
+        current_messages = prepared["current_messages"]
+        saved_len = prepared["saved_len"]
+        config = prepared["config"]
+        acquired = prepared["acquired"]
 
-        # 创建入队消息
-        item = QueueItem(
-            id=f"msg_{int(time.time() * 1000)}",
-            session_id=session_id,
-            prompt=user_message,
-            mode=QueueMode.ADAPTIVE,
-        )
-
-        # 入队并等待处理
-        result = await self.lane_queue.enqueue(item)
-        acquired = False
-
-        # 如果不是直接 steer，需要从队列取出并获得执行槽位
-        if result not in ("steered", "steered_and_queued"):
-            item = await self.lane_queue.dequeue(session_id)
-            if item is None:
-                return "系统繁忙，请稍后重试"
-            acquired = True
+        max_rounds = 50
+        max_total_tools = 100
+        consecutive_fails = 0
+        actual_rounds = 0
+        all_tool_results: list[ToolResult] = []
+        final_content = ""
 
         try:
-            ctx = await self._setup_chat_context(user_message, session_id, system_prompt, tools)
-            base_system_prompt = ctx["base_system_prompt"]
-            current_messages = ctx["current_messages"]
-            saved_len = ctx["saved_len"]
-            config = ctx["config"]
-
-            max_rounds = 50
-            max_total_tools = 100
-            consecutive_fails = 0
-            actual_rounds = 0
-            all_tool_results: list[ToolResult] = []
-            final_content = ""
-
             for round_num in range(max_rounds):
-                # 中循环压缩: 每5轮检查 token 用量，防止工具调用爆窗口
                 if round_num > 0 and round_num % 5 == 0:
                     if self.compressor.needs_compression(
                         current_messages, system_tokens=len(system_prompt) // 3
@@ -270,21 +339,22 @@ class Agent:
                 if len(all_tool_results) >= max_total_tools:
                     final_content += "\n[已达到最大工具调用上限(100次)，任务被迫中止。如需完成请简化任务或分阶段执行]"
                     break
-                if consecutive_fails >= 5:  # 增加容错次数，允许复杂任务有更多恢复机会
+                if consecutive_fails >= 5:
                     final_content += "\n[连续5次工具执行失败，任务中止。请检查错误原因后重试]"
                     break
 
                 actual_rounds += 1
                 await self.sessions.update_state(session_id, AgentState.EXECUTING)
 
-                # 每轮注入最新工作记忆——dynamic 放消息末尾（不破坏 prefix cache）
                 live_static, live_dynamic = self._build_enhanced_prompt(
                     base_system_prompt, user_message, first_round=False
                 )
-                dyn_msg = None
+                dyn_idx = -1
                 if live_dynamic:
-                    dyn_msg = Message(role=MessageRole.SYSTEM, content=live_dynamic)
-                    current_messages.append(dyn_msg)
+                    current_messages.append(Message(
+                        role=MessageRole.SYSTEM, content=live_dynamic,
+                    ))
+                    dyn_idx = len(current_messages) - 1
 
                 response = await self.llm.chat(
                     current_messages,
@@ -294,9 +364,8 @@ class Agent:
                     provider=config.provider,
                 )
 
-                # 清理本轮注入的 dynamic 消息（不污染历史）
-                if dyn_msg is not None:
-                    current_messages.pop()
+                if dyn_idx >= 0:
+                    del current_messages[dyn_idx]
 
                 if not response.tool_calls:
                     if response.finish_reason == "length":
@@ -317,49 +386,14 @@ class Agent:
                     final_content += response.content
                     break
 
-                final_content += response.content  # 工具轮次的文本也要累积
+                final_content += response.content
 
-                # 执行工具调用
-                round_results: list[ToolResult] = []
-                for tc in response.tool_calls:
-                    if len(all_tool_results) >= max_total_tools:
-                        break
-                    tr = await self._execute_tool(tc, session_id)
-                    round_results.append(tr)
-                    all_tool_results.append(tr)
-                    if tr.success:
-                        consecutive_fails = 0
-                    else:
-                        consecutive_fails += 1
-
-                # 更新工作记忆（记录尝试、错误、计划进度）
-                self._update_working_memory(
-                    response.content, round_results, user_message
+                consecutive_fails, _ = await self._process_round_results(
+                    response.tool_calls, session_id, response.content,
+                    response.reasoning_content, user_message,
+                    all_tool_results, consecutive_fails, max_total_tools,
+                    current_messages,
                 )
-
-                # 助手消息（保留 reasoning_content，DeepSeek 思考模式必须传回）
-                assistant_msg = Message(
-                    role=MessageRole.ASSISTANT,
-                    content=response.content,
-                    tool_calls=response.tool_calls,
-                    reasoning_content=response.reasoning_content,
-                )
-                current_messages.append(assistant_msg)
-
-                # 工具结果作为独立 TOOL 角色消息追加
-                for tr in round_results:
-                    tool_msg = Message(
-                        role=MessageRole.TOOL,
-                        content=str(tr.result)[:4000] if tr.success else (tr.error or "执行失败"),
-                        metadata={
-                            "tool_call_id": tr.call_id,
-                            "tool_name": tr.name,
-                        },
-                    )
-                    current_messages.append(tool_msg)
-
-                # final_content 已经在上面累积了，不要覆盖
-                # 继续下一轮循环，让LLM看到工具执行结果
 
             return await self._finalize_chat(
                 user_message, session_id, current_messages, saved_len,
@@ -386,58 +420,47 @@ class Agent:
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """流式对话 — 逐步返回 LLM 输出。"""
-        if not self._initialized:
-            await self.initialize()
-
-        session = await self.sessions.get_or_create(session_id=session_id)
-        session_id = session.session_id
-
-        item = QueueItem(
-            id=f"msg_{int(time.time() * 1000)}",
-            session_id=session_id,
-            prompt=user_message,
-            mode=QueueMode.ADAPTIVE,
+        prepared = await self._chat_prepare(
+            user_message, session_id, system_prompt, tools,
+            state=AgentState.STREAMING,
         )
+        if prepared is None:
+            yield StreamChunk(content="系统繁忙，请稍后重试", finish_reason="error")
+            return
 
-        result = await self.lane_queue.enqueue(item)
-        acquired = False
+        session_id = prepared["session_id"]
+        base_system_prompt = prepared["base_system_prompt"]
+        current_messages = prepared["current_messages"]
+        saved_len = prepared["saved_len"]
+        config = prepared["config"]
+        acquired = prepared["acquired"]
 
-        if result not in ("steered", "steered_and_queued"):
-            item = await self.lane_queue.dequeue(session_id)
-            if item is None:
-                yield StreamChunk(content="系统繁忙，请稍后重试", finish_reason="error")
-                return
-            acquired = True
-
-        # 标记流式活跃，使 steer 可以注入
         self.lane_queue.track_active(session_id)
 
+        steer_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        async def steer_cb(text: str) -> None:
+            await steer_queue.put(text)
+
+        self.lane_queue.register_steer_callback(session_id, steer_cb)
+
+        stop_requested = False
+
+        async def interrupt_cb() -> None:
+            nonlocal stop_requested
+            stop_requested = True
+
+        self.lane_queue.register_interrupt_callback(session_id, interrupt_cb)
+
+        max_rounds = 50
+        max_total_tools = 100
+        consecutive_fails = 0
+        actual_rounds = 0
+        all_tool_results: list[ToolResult] = []
+        full_content = ""
+
         try:
-            ctx = await self._setup_chat_context(
-                user_message, session_id, system_prompt, tools,
-                state=AgentState.STREAMING,
-            )
-            base_system_prompt = ctx["base_system_prompt"]
-            current_messages = ctx["current_messages"]
-            saved_len = ctx["saved_len"]
-            config = ctx["config"]
-            full_content = ""
-
-            steer_queue: asyncio.Queue[str] = asyncio.Queue()
-
-            async def steer_cb(text: str) -> None:
-                await steer_queue.put(text)
-
-            self.lane_queue.register_steer_callback(session_id, steer_cb)
-
-            max_rounds = 50
-            max_total_tools = 100
-            consecutive_fails = 0
-            actual_rounds = 0
-            all_tool_results: list[ToolResult] = []
-
             for round_num in range(max_rounds):
-                # 中循环压缩: 每5轮检查 token 用量
                 if round_num > 0 and round_num % 5 == 0:
                     if self.compressor.needs_compression(
                         current_messages, system_tokens=len(system_prompt) // 3
@@ -448,8 +471,11 @@ class Agent:
                 if len(all_tool_results) >= max_total_tools:
                     yield StreamChunk(content="\n[已达到最大工具调用上限(100次)，任务被迫中止。如需完成请简化任务或分阶段执行]")
                     break
-                if consecutive_fails >= 5:  # 增加容错次数，允许复杂任务有更多恢复机会
+                if consecutive_fails >= 5:
                     yield StreamChunk(content="\n[连续5次工具执行失败，任务中止。请检查错误原因后重试]")
+                    break
+                if stop_requested:
+                    yield StreamChunk(content="\n[任务已被用户中断]")
                     break
 
                 actual_rounds += 1
@@ -461,10 +487,12 @@ class Agent:
                 live_static, live_dynamic = self._build_enhanced_prompt(
                     base_system_prompt, user_message, first_round=False
                 )
-                dyn_msg = None
+                dyn_idx = -1
                 if live_dynamic:
-                    dyn_msg = Message(role=MessageRole.SYSTEM, content=live_dynamic)
-                    current_messages.append(dyn_msg)
+                    current_messages.append(Message(
+                        role=MessageRole.SYSTEM, content=live_dynamic,
+                    ))
+                    dyn_idx = len(current_messages) - 1
 
                 async for chunk in self.llm.chat_stream(
                     current_messages,
@@ -473,11 +501,14 @@ class Agent:
                     config=config,
                     provider=config.provider,
                 ):
-                    # 排出 steer 队列
                     while not steer_queue.empty():
                         try:
                             steer_text = steer_queue.get_nowait()
-                            yield StreamChunk(content=f"\n[注入: {steer_text}]\n")
+                            yield StreamChunk(content=f"\n[注入指令: {steer_text}]\n")
+                            current_messages.append(Message(
+                                role=MessageRole.USER,
+                                content=f"[用户中途插入的指令] {steer_text}",
+                            ))
                         except asyncio.QueueEmpty:
                             break
                     if chunk.content:
@@ -491,11 +522,9 @@ class Agent:
                         last_finish = chunk.finish_reason
                     yield chunk
 
-                # 清理本轮注入的 dynamic 消息
-                if dyn_msg is not None:
-                    current_messages.pop()
+                if dyn_idx >= 0:
+                    del current_messages[dyn_idx]
 
-                # 无工具调用 → 检查是否需要继续
                 if not round_tool_calls:
                     if last_finish == "length":
                         current_messages.append(Message(
@@ -511,47 +540,16 @@ class Agent:
                         continue
                     break
 
-                # 执行工具调用
-                round_results: list[ToolResult] = []
-                for tc in round_tool_calls:
-                    if len(all_tool_results) >= max_total_tools:
-                        break
-                    tr = await self._execute_tool(tc, session_id)
-                    round_results.append(tr)
-                    all_tool_results.append(tr)
-                    if tr.success:
-                        consecutive_fails = 0
-                    else:
-                        consecutive_fails += 1
+                # 共享工具处理+消息构建
+                consecutive_fails, round_results = await self._process_round_results(
+                    round_tool_calls, session_id, round_content, round_reasoning,
+                    user_message, all_tool_results, consecutive_fails,
+                    max_total_tools, current_messages,
+                )
+
+                for tr in round_results:
                     yield StreamChunk(tool_result=tr)
 
-                # 更新工作记忆
-                self._update_working_memory(
-                    round_content, round_results, user_message
-                )
-
-                # 助手消息（保留 reasoning_content）
-                assistant_msg = Message(
-                    role=MessageRole.ASSISTANT,
-                    content=round_content,
-                    tool_calls=round_tool_calls,
-                    reasoning_content=round_reasoning,
-                )
-                current_messages.append(assistant_msg)
-
-                # 工具结果作为独立 TOOL 消息
-                for tr in round_results:
-                    tool_msg = Message(
-                        role=MessageRole.TOOL,
-                        content=str(tr.result)[:4000] if tr.success else (tr.error or "失败"),
-                        metadata={
-                            "tool_call_id": tr.call_id,
-                            "tool_name": tr.name,
-                        },
-                    )
-                    current_messages.append(tool_msg)
-
-            # 生成任务执行报告并 yield（流式特有）
             report = _build_task_report(
                 user_message, actual_rounds, all_tool_results,
                 len(all_tool_results) >= max_total_tools,
@@ -1388,34 +1386,53 @@ class Agent:
             if len(trace) < 2:
                 return  # 太短的任务不值得学习
 
+            # 计算任务成功率
+            overall_success = all(r.success for r in tool_results) if tool_results else True
+
             # Layer 2: 程序性记忆 — 从追踪生成/更新技能
             skill = await self.memory.learn_skill(
                 task=task,
                 trace=trace,
-                success=all(r.success for r in tool_results) if tool_results else True,
+                success=overall_success,
                 tool_results=tool_results,
             )
             if skill is None:
                 return
 
             # GEPA 进化 — 优化已生成的技能
-            if self.config.skill.gepa_enabled:
+            if self.config.skill.gepa_enabled and skill is not None:
                 try:
-                    from soul.skills.gepa import GEPAEngine
-                    engine = GEPAEngine(
-                        skills_dir=self.config.skill.skills_dir,
-                        max_generations=self.config.skill.gepa_generations,
-                        population_size=self.config.skill.gepa_population,
+                    from soul.skills.gepa import GEPAConfig, GEPAEngine
+
+                    gepa_cfg = GEPAConfig(
+                        population_size=self.config.skill.gepa_population_size,
+                        max_iterations=self.config.skill.gepa_max_iterations,
                     )
-                    evolved = await engine.evolve(
-                        skill,
-                        evaluator=None,  # 使用默认评估器
-                        task_context=task,
-                    )
-                    if evolved:
-                        skill = evolved
+                    engine = GEPAEngine(config=gepa_cfg)
+
+                    # 从 trace 构建测试用例（至少 3 个用于评估）
+                    test_cases: list[dict] = []
+                    for step in trace:
+                        if step.get("action") in ("tool_call", "decision"):
+                            test_cases.append({
+                                "input": step.get("description", "")[:200],
+                                "expected": "success" if overall_success else "partial",
+                            })
+                        if len(test_cases) >= 5:
+                            break
+
+                    if len(test_cases) >= 3:
+                        evolved = await engine.evolve(
+                            skill,
+                            test_cases=test_cases,
+                            execution_traces=[{"task": task, "steps": trace}],
+                        )
+                        if evolved and evolved.meta.fitness_score > 0:
+                            skill = evolved
                 except ImportError:
                     pass  # GEPA 依赖不可用时静默跳过
+                except Exception:
+                    pass  # GEPA 进化失败不影响主流程
 
         except Exception:
             pass  # 技能学习失败不影响主流程
@@ -1425,7 +1442,11 @@ class Agent:
     # ═══════════════════════════════════════════
 
     def _extract_lessons(self, task: str, tool_count: int) -> None:
-        """从当前任务的错误和发现中提取教训，追加到 lessons 文件。"""
+        """从当前任务的错误和发现中提取教训，追加到 lessons 文件。
+
+        每条教训附带质量评分——基于内容丰富度、防御规则数量。
+        低质量教训在淘汰时优先移除。
+        """
         wm = self.working_memory
         if not wm.error_patterns and not wm.findings:
             return
@@ -1434,10 +1455,23 @@ class Agent:
             lessons_path = Path(self.config.memory.workspace_dir).expanduser() / "lessons.jsonl"
             lessons_path.parent.mkdir(parents=True, exist_ok=True)
 
+            # 计算质量评分 0-1
+            quality = 0.3  # 基础分
+            if wm.error_patterns:
+                quality += 0.2
+            if wm.findings:
+                quality += 0.15
+            if wm.ruled_out:
+                quality += 0.1
+            if tool_count >= 3:
+                quality += 0.1  # 复杂任务教训更有价值
+            quality = min(quality, 1.0)
+
             entry = {
                 "time": _dt.datetime.now().isoformat(),
                 "task": task[:200],
                 "tools_used": tool_count,
+                "quality": round(quality, 2),
             }
             if wm.error_patterns:
                 entry["errors"] = [
@@ -1450,25 +1484,24 @@ class Agent:
 
             # 检测重复错误模式 → 生成防御规则
             if wm.error_patterns:
-                all_lines = []
+                all_entries = []
                 if lessons_path.exists():
-                    all_lines = lessons_path.read_text(encoding="utf-8").strip().split("\n")
-                # 统计相同工具+相似错误的次数
+                    for line in lessons_path.read_text(encoding="utf-8").strip().split("\n"):
+                        if line.strip():
+                            try:
+                                all_entries.append(_json.loads(line))
+                            except Exception:
+                                pass
+                # 统计相同错误模式的次数
                 err_counts: dict[str, int] = {}
-                for line in all_lines[-20:]:
-                    try:
-                        prev = _json.loads(line)
-                        for e in prev.get("errors", []):
-                            key = e[:60]  # "tool: error_msg" 前 60 字符
-                            err_counts[key] = err_counts.get(key, 0) + 1
-                    except Exception:
-                        pass
-                # 当前任务的错误
+                for prev in all_entries[-20:]:
+                    for e in prev.get("errors", []):
+                        key = e[:60]
+                        err_counts[key] = err_counts.get(key, 0) + 1
                 for e in wm.error_patterns[-3:]:
                     key = f"{e.get('tool','')}: {e.get('error','')[:60]}"
                     err_counts[key] = err_counts.get(key, 0) + 1
 
-                # 找到 ≥2 次的错误模式，标记为防御规则
                 defense_rules = []
                 for key, count in err_counts.items():
                     if count >= 2:
@@ -1480,47 +1513,66 @@ class Agent:
                         })
                 if defense_rules:
                     entry["defense_rules"] = defense_rules
+                    entry["quality"] = min(1.0, entry["quality"] + 0.15)
 
             with open(lessons_path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
 
-            # 保持最近 100 条——自动压缩
-            all_lines = lessons_path.read_text(encoding="utf-8").strip().split("\n")
-            if len(all_lines) > 100:
-                lessons_path.write_text("\n".join(all_lines[-100:]) + "\n", encoding="utf-8")
+            # 保持最近 100 条——按质量排序，优先保留高质量 + 最近的
+            if lessons_path.exists():
+                all_lines = lessons_path.read_text(encoding="utf-8").strip().split("\n")
+                if len(all_lines) > 100:
+                    parsed = []
+                    for line in all_lines:
+                        try:
+                            parsed.append(_json.loads(line))
+                        except Exception:
+                            parsed.append({"quality": 0, "time": "", "_raw": line})
+                    # 排序：质量(降序) + 时效性(降序)
+                    parsed.sort(key=lambda x: (x.get("quality", 0), x.get("time", "")), reverse=True)
+                    kept = _json.dumps(parsed[0], ensure_ascii=False) if len(parsed) == 1 else "\n".join(
+                        _json.dumps(p, ensure_ascii=False) for p in parsed[:100]
+                    )
+                    lessons_path.write_text(kept + "\n", encoding="utf-8")
         except Exception:
             pass
 
     def _inject_relevant_lessons(self, task: str) -> str:
-        """从历史教训中匹配与当前任务相关的内容，注入为教练上下文。"""
+        """从历史教训中匹配与当前任务相关的内容，注入为教练上下文。
+
+        优先返回高质量(quality_score ≥ 0.5)的教训，按质量排序。
+        """
         try:
             import json as _json
             lessons_path = Path(self.config.memory.workspace_dir).expanduser() / "lessons.jsonl"
             if not lessons_path.exists():
                 return ""
 
-            # 读取最近 20 条教训
-            lines = []
+            # 读取所有教训（最多 100 条）
+            all_entries: list[dict] = []
             with open(lessons_path, "r", encoding="utf-8") as f:
                 for line in f:
-                    lines.append(line.strip())
-            recent = lines[-20:]
+                    try:
+                        entry = _json.loads(line.strip())
+                        all_entries.append(entry)
+                    except Exception:
+                        pass
 
-            # 简单关键词匹配——找与当前任务相关的教训
+            # 按质量排序，优先使用高质量条目
+            all_entries.sort(key=lambda e: e.get("quality", 0), reverse=True)
+            # 只从质量 ≥ 0.3 的条目中匹配
+            candidates = [e for e in all_entries if e.get("quality", 0) >= 0.3][:30]
+
+            # 关键词匹配
             task_lower = task.lower()
             relevant = []
-            for line in reversed(recent):
-                try:
-                    entry = _json.loads(line)
-                    entry_text = _json.dumps(entry, ensure_ascii=False).lower()
-                    # 宽松匹配：任何关键词重叠即可
-                    words = set(task_lower.split())
-                    entry_words = set(entry_text.split())
-                    overlap = words & entry_words
-                    if overlap and len(overlap) >= 2:
-                        relevant.append(entry)
-                except Exception:
-                    continue
+            for entry in candidates:
+                entry_text = _json.dumps(entry, ensure_ascii=False).lower()
+                words = set(task_lower.split())
+                entry_words = set(entry_text.split())
+                overlap = words & entry_words
+                if overlap and len(overlap) >= 2:
+                    relevant.append(entry)
                 if len(relevant) >= 3:
                     break
 

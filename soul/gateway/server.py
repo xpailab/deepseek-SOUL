@@ -44,8 +44,10 @@ async def _safe_ws_stream(agent, txt: str, sid: str, ws, system_prompt: str = ""
                 d["args"] = str(getattr(chunk.tool_call, "arguments", ""))[:200]
             if chunk.tool_result:
                 d["r"] = {"ok": chunk.tool_result.success, "text": _fmt_tool_result(chunk.tool_result)}
-            if chunk.finish_reason:
-                d["f"] = chunk.finish_reason
+            # 只转发 error 到前端——tool_calls/stop/length 是 LLM 单次响应级，
+            # 不是任务级。任务级 "stop" 由 handler 在 _safe_ws_stream 返回后发送。
+            if chunk.finish_reason == "error":
+                d["f"] = "error"
             if d:
                 try:
                     await ws.send_json(d)
@@ -123,6 +125,39 @@ class Gateway:
         tags = {"info": "📘", "req": "→", "resp": "←", "err": "✗", "ws": "⇄"}
         tag = tags.get(level, "·")
         print(f"{ts}  {tag}  {msg}", flush=True)
+
+    async def _exec_with_steer(self, sid: str, ws, coro):
+        """在后台执行 agent 协程，主循环持续接收 WS 消息以支持 steer/stop。
+
+        coro 负责执行 agent 并向 WS 发送消息。此方法运行一个轮询循环，
+        在 coro 未完成期间持续接收 WS 消息，将 steer/stop 转发给 agent。
+        """
+        task = asyncio.ensure_future(coro)
+        try:
+            while not task.done():
+                try:
+                    data = await asyncio.wait_for(ws.receive_json(), timeout=0.3)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    task.cancel()
+                    break
+
+                action = data.get("action", "")
+                msg = data.get("message", "")
+                if action == "steer" and msg:
+                    await self.agent.lane_queue.trigger_steer(sid, msg)
+                    self._log("req", f"STEER [{sid[:8]}] {msg[:50]}")
+                elif action == "stop":
+                    self._log("req", f"STOP [{sid[:8]}]")
+                    await self.agent.lane_queue.trigger_interrupt(sid)
+        finally:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except Exception:
+                pass
 
     async def _handle_cli_message(self, msg):
         return await self.handle_message(msg)
@@ -284,14 +319,13 @@ class Gateway:
                         # 处理 steer 注入 / 停止指令
                         action = data.get("action", "")
                         if action == "steer":
-                            self.agent.lane_queue._active_runs.add(sid)
-                            cb = self.agent.lane_queue._steer_callbacks.get(sid)
-                            if cb:
-                                await cb(txt)
+                            ok = await self.agent.lane_queue.trigger_steer(sid, txt)
+                            if ok:
                                 self._log("req", f"STEER [{sid[:8]}] {txt[:50]}")
                             continue
                         if action == "stop":
                             self._log("req", f"STOP [{sid[:8]}]")
+                            await self.agent.lane_queue.trigger_interrupt(sid)
                             try: await ws.send_json({"f": "stop"})
                             except Exception: pass
                             continue
@@ -310,126 +344,126 @@ class Gateway:
                             difficulty = await _llm_classify(txt, adapter)
 
                             if difficulty <= 1:
-                                await _safe_ws_stream(self.agent, txt, sid, ws)
+                                await self._exec_with_steer(
+                                    sid, ws,
+                                    _safe_ws_stream(self.agent, txt, sid, ws),
+                                )
                                 try:
                                     await ws.send_json({"f": "stop"})
                                 except Exception:
                                     pass
                             elif difficulty >= 4:
-                                # 复杂项目 → 分阶段执行
-                                try:
-                                    # 先进行任务规划
-                                    planner = TaskStagePlanner(self.agent)
-                                    plan = await planner.plan(txt)
+                                # 复杂项目 → 分阶段执行（后台执行，支持 steer/stop）
+                                async def _run_stages():
+                                    try:
+                                        planner = TaskStagePlanner(self.agent)
+                                        plan = await planner.plan(txt)
 
-                                    if planner.should_use_stages(txt, plan):
-                                        # 发送阶段计划给用户
-                                        await ws.send_json({
-                                            "stream_id": "_meta",
-                                            "type": "stage_plan",
-                                            "plan": plan.to_dict(),
-                                            "message": f"任务已拆分为 {len(plan.stages)} 个阶段，预计需要 {plan.total_estimated_tools} 次工具调用。"
-                                        })
-
-                                        # 逐阶段执行
-                                        previous_results = []
-                                        while not plan.is_complete():
-                                            stage = plan.get_current_stage()
-                                            if not stage:
-                                                break
-
-                                            # 构建阶段提示
-                                            stage_prompt = build_stage_prompt(stage, plan, previous_results)
-
-                                            # 执行当前阶段
+                                        if planner.should_use_stages(txt, plan):
                                             await ws.send_json({
                                                 "stream_id": "_meta",
-                                                "type": "stage_start",
-                                                "stage": stage.to_dict(),
-                                                "progress": plan.get_progress_summary(),
+                                                "type": "stage_plan",
+                                                "plan": plan.to_dict(),
+                                                "message": f"任务已拆分为 {len(plan.stages)} 个阶段，预计需要 {plan.total_estimated_tools} 次工具调用。"
                                             })
 
-                                            stage_content = ""
-                                            gen = self.agent.chat_stream(txt, session_id=sid, system_prompt=stage_prompt)
-                                            try:
-                                                async for chunk in gen:
-                                                    d = {"stage_id": stage.id}
-                                                    if chunk.content:
-                                                        d["c"] = chunk.content
-                                                        stage_content += chunk.content
-                                                    if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
-                                                    if chunk.tool_result:
-                                                        d["r"] = {"ok": chunk.tool_result.success, "text": _fmt_tool_result(chunk.tool_result)}
-                                                    if chunk.finish_reason: d["f"] = chunk.finish_reason
-                                                    if len(d) > 1:
-                                                        try:
-                                                            await ws.send_json(d)
-                                                        except Exception:
-                                                            break
-                                            finally:
-                                                if hasattr(gen, 'aclose'):
-                                                    try: await gen.aclose()
-                                                    except Exception: pass
+                                            previous_results = []
+                                            while not plan.is_complete():
+                                                stage = plan.get_current_stage()
+                                                if not stage:
+                                                    break
 
-                                            # 解析阶段完成结果
-                                            summary, artifacts = parse_stage_completion(stage_content)
-                                            plan.complete_current_stage(summary, artifacts)
-                                            previous_results.append(summary)
+                                                stage_prompt = build_stage_prompt(stage, plan, previous_results)
 
-                                            # 发送阶段完成消息
-                                            await ws.send_json({
-                                                "stream_id": "_meta",
-                                                "type": "stage_complete",
-                                                "stage": stage.to_dict(),
-                                                "summary": summary,
-                                                "artifacts": artifacts,
-                                                "progress": plan.get_progress_summary(),
-                                            })
-
-                                            # 如果不是最后一个阶段，等待用户确认
-                                            if not plan.is_complete():
-                                                next_stage = plan.get_next_stage()
                                                 await ws.send_json({
                                                     "stream_id": "_meta",
-                                                    "type": "await_confirm",
-                                                    "message": f"阶段 '{stage.name}' 完成。",
-                                                    "next_stage": next_stage.to_dict() if next_stage else None,
+                                                    "type": "stage_start",
+                                                    "stage": stage.to_dict(),
                                                     "progress": plan.get_progress_summary(),
                                                 })
-                                                # 这里需要等待前端发送确认消息
-                                                # 暂时直接继续（后续改进）
-                                                await asyncio.sleep(0.5)
 
-                                        # 所有阶段完成
-                                        await ws.send_json({
-                                            "stream_id": "_meta",
-                                            "type": "all_stages_complete",
-                                            "plan": plan.to_dict(),
-                                            "message": "所有阶段已完成！",
-                                        })
-                                    else:
-                                        await _safe_ws_stream(self.agent, txt, sid, ws)
+                                                stage_content = ""
+                                                gen = self.agent.chat_stream(txt, session_id=sid, system_prompt=stage_prompt)
+                                                try:
+                                                    async for chunk in gen:
+                                                        d = {"stage_id": stage.id}
+                                                        if chunk.content:
+                                                            d["c"] = chunk.content
+                                                            stage_content += chunk.content
+                                                        if chunk.tool_call: d["t"] = chunk.tool_call.name; d["args"] = str(getattr(chunk.tool_call,"arguments",""))[:200]
+                                                        if chunk.tool_result:
+                                                            d["r"] = {"ok": chunk.tool_result.success, "text": _fmt_tool_result(chunk.tool_result)}
+                                                        if chunk.finish_reason == "error":
+                                                            d["f"] = "error"
+                                                        if len(d) > 1:
+                                                            try:
+                                                                await ws.send_json(d)
+                                                            except Exception:
+                                                                break
+                                                finally:
+                                                    if hasattr(gen, 'aclose'):
+                                                        try: await gen.aclose()
+                                                        except Exception: pass
 
-                                except Exception as e:
-                                    await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
-                                finally:
-                                    await ws.send_json({"f": "stop"})
-                            else:
-                                # 中等复杂度 → 并行Agent
-                                pa = None
+                                                summary, artifacts = parse_stage_completion(stage_content)
+                                                plan.complete_current_stage(summary, artifacts)
+                                                previous_results.append(summary)
+
+                                                await ws.send_json({
+                                                    "stream_id": "_meta",
+                                                    "type": "stage_complete",
+                                                    "stage": stage.to_dict(),
+                                                    "summary": summary,
+                                                    "artifacts": artifacts,
+                                                    "progress": plan.get_progress_summary(),
+                                                })
+
+                                                if not plan.is_complete():
+                                                    next_stage = plan.get_next_stage()
+                                                    await ws.send_json({
+                                                        "stream_id": "_meta",
+                                                        "type": "await_confirm",
+                                                        "message": f"阶段 '{stage.name}' 完成。",
+                                                        "next_stage": next_stage.to_dict() if next_stage else None,
+                                                        "progress": plan.get_progress_summary(),
+                                                    })
+                                                    await asyncio.sleep(0.5)
+
+                                            await ws.send_json({
+                                                "stream_id": "_meta",
+                                                "type": "all_stages_complete",
+                                                "plan": plan.to_dict(),
+                                                "message": "所有阶段已完成！",
+                                            })
+                                        else:
+                                            await _safe_ws_stream(self.agent, txt, sid, ws)
+                                    except Exception as e:
+                                        await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
+
+                                await self._exec_with_steer(sid, ws, _run_stages())
                                 try:
+                                    await ws.send_json({"f": "stop"})
+                                except Exception:
+                                    pass
+                            else:
+                                # 中等复杂度 → 并行Agent（后台执行，支持 steer/stop）
+                                async def _run_parallel():
                                     async def make_agent():
                                         a = Agent(config=base_cfg)
                                         await a.initialize()
                                         return a
                                     pa = ParallelAgent(make_agent)
-                                    async for evt in pa.execute(txt, sid, agent_count=difficulty):
-                                        await ws.send_json(evt)
-                                except Exception as e:
-                                    await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
-                                finally:
-                                    # 确保流结束标记
+                                    try:
+                                        async for evt in pa.execute(txt, sid, agent_count=difficulty):
+                                            await ws.send_json(evt)
+                                    except Exception as e:
+                                        await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
+
+                                await self._exec_with_steer(sid, ws, _run_parallel())
+                                try:
                                     await ws.send_json({"stream_id": "_meta", "type": "finished", "f": "stop"})
+                                except Exception:
+                                    pass
                         except Exception as e:
                             await ws.send_json({"stream_id": "_meta", "type": "error", "content": str(e), "f": "error"})
                 except Exception:

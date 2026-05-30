@@ -66,6 +66,22 @@ class ErrorEntry:
         return self.success_count / self.usage_count
 
     @property
+    def quality_score(self) -> float:
+        """综合质量评分 0-1。
+
+        考虑: 置信度 (50%) + 使用频率 (30%) + 时效性 (20%)
+        低质量条目会在检索时降权、裁剪时优先淘汰。
+        """
+        conf = self.confidence
+        usage_factor = min(self.usage_count / 10.0, 1.0)
+        if self.last_used > 0:
+            days_since = (time.time() - self.last_used) / 86400
+            recency = max(0.1, 1.0 - days_since / 30.0)
+        else:
+            recency = max(0.1, 1.0 - (time.time() - self.created_at) / (30 * 86400))
+        return conf * 0.5 + usage_factor * 0.3 + recency * 0.2
+
+    @property
     def is_stale(self, days: int = 30) -> bool:
         """超过 days 天未使用视为过期。"""
         if self.last_used == 0:
@@ -155,28 +171,37 @@ class ErrorKnowledgeBase:
             self.stats["total_hits"] += 1
             return entry
 
-        # 2. 正则模式匹配
+        # 2. 正则模式匹配（多匹配时取质量最高）
+        regex_matches: list[ErrorEntry] = []
         for entry in self.entries.values():
             if entry.pattern and re.search(entry.pattern, error_lower):
                 if tool and entry.tool and entry.tool != tool:
-                    continue  # 工具不匹配则跳过
-                entry.usage_count += 1
-                entry.last_used = time.time()
-                self.stats["total_hits"] += 1
-                return entry
+                    continue
+                regex_matches.append(entry)
+        if regex_matches:
+            best = max(regex_matches, key=lambda e: e.quality_score)
+            best.usage_count += 1
+            best.last_used = time.time()
+            self.stats["total_hits"] += 1
+            return best
 
-        # 3. 关键词模糊匹配
+        # 3. 关键词模糊匹配（多匹配时取质量最高）
         keywords = self._extract_keywords(error_text)
+        kw_matches: list[ErrorEntry] = []
         for entry in self.entries.values():
             entry_kw = self._extract_keywords(entry.pattern)
             common = keywords & entry_kw
             if len(common) >= 2:
                 if tool and entry.tool and entry.tool != tool:
                     continue
-                entry.usage_count += 1
-                entry.last_used = time.time()
-                self.stats["total_hits"] += 1
-                return entry
+                kw_matches.append((len(common), entry))
+        if kw_matches:
+            kw_matches.sort(key=lambda x: (x[0], x[1].quality_score), reverse=True)
+            best = kw_matches[0][1]
+            best.usage_count += 1
+            best.last_used = time.time()
+            self.stats["total_hits"] += 1
+            return best
 
         return None
 
@@ -246,7 +271,7 @@ class ErrorKnowledgeBase:
     # ═══ 维护 ═══
 
     def _prune(self) -> None:
-        """裁剪过大的知识库——移除过期和低质量条目。"""
+        """裁剪过大的知识库——按质量评分淘汰低价值条目。"""
         if len(self.entries) <= self.MAX_ENTRIES:
             return
 
@@ -255,11 +280,11 @@ class ErrorKnowledgeBase:
         for k in stale:
             del self.entries[k]
 
-        # 如果还是太多，移除低置信度条目
+        # 按质量评分排序，淘汰最低分
         if len(self.entries) > self.MAX_ENTRIES:
             sorted_entries = sorted(
                 self.entries.items(),
-                key=lambda x: (x[1].confidence, x[1].usage_count),
+                key=lambda x: x[1].quality_score,
             )
             to_remove = sorted_entries[:len(self.entries) - self.MAX_ENTRIES]
             for k, _ in to_remove:

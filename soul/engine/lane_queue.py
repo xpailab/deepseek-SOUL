@@ -285,11 +285,27 @@ class LaneQueue:
         """注册 steer 回调。"""
         self._steer_callbacks[session_id] = callback
 
+    async def trigger_steer(self, session_id: str, text: str) -> bool:
+        """触发指令注入——外部调用以向正在执行的 Agent 插入指令。"""
+        cb = self._steer_callbacks.get(session_id)
+        if cb:
+            await cb(text)
+            return True
+        return False
+
     def register_interrupt_callback(
         self, session_id: str, callback: Callable[[], Coroutine[Any, Any, None]]
     ) -> None:
         """注册 interrupt 回调。"""
         self._interrupt_callbacks[session_id] = callback
+
+    async def trigger_interrupt(self, session_id: str) -> bool:
+        """触发中断——外部调用以停止正在执行的 Agent。"""
+        cb = self._interrupt_callbacks.get(session_id)
+        if cb:
+            await cb()
+            return True
+        return False
 
     def resolve_mode(
         self, item: QueueItem, is_streaming: bool, session_busy: bool
