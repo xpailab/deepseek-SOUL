@@ -29,12 +29,12 @@ class OpenAIAdapter(BaseAdapter):
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self.config.api_key:
+                headers["Authorization"] = f"Bearer {self.config.api_key}"
             self._client = httpx.AsyncClient(
                 base_url=self.config.api_base,
-                headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 timeout=self.config.timeout,
             )
         return self._client
