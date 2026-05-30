@@ -37,6 +37,8 @@ async def _safe_ws_stream(agent, txt: str, sid: str, ws, system_prompt: str = ""
     try:
         async for chunk in gen:
             d = {}
+            if chunk.reasoning_content:
+                d["th"] = chunk.reasoning_content
             if chunk.content:
                 d["c"] = chunk.content
             if chunk.tool_call:
@@ -387,6 +389,8 @@ class Gateway:
                                                 try:
                                                     async for chunk in gen:
                                                         d = {"stage_id": stage.id}
+                                                        if chunk.reasoning_content:
+                                                            d["th"] = chunk.reasoning_content
                                                         if chunk.content:
                                                             d["c"] = chunk.content
                                                             stage_content += chunk.content
@@ -808,12 +812,36 @@ function toast(t) {
 
     // === 简单对话模式 (无 stream_id，旧格式) ===
     if(!sid){
+      if(d.th){
+        if(!simpleMsg){
+          document.getElementById('welcome')?.remove();
+          simpleMsg = document.createElement('div'); simpleMsg.className = 'msg assistant';
+          simpleMsg.innerHTML = '<div class=\"msg-body\"><div class=\"msg-text\"></div></div>';
+          document.getElementById('msgList').appendChild(simpleMsg);
+        }
+        var think = simpleMsg.querySelector('.msg-body');
+        var lastThink = think.querySelector('.think-block:last-child');
+        if(!lastThink || lastThink.getAttribute('data-done')==='1'){
+          lastThink = document.createElement('div');
+          lastThink.className = 'think-block';
+          lastThink.style.cssText = 'font-size:.82rem;color:#9ca3af;font-style:italic;margin:4px 0;padding:4px 0;border-left:2px solid #d1d5db;padding-left:10px;';
+          think.appendChild(lastThink);
+        }
+        lastThink.textContent += d.th;
+        scrollDown();
+      }
       if(d.c){
         if(!simpleMsg){
           document.getElementById('welcome')?.remove();
           simpleMsg = document.createElement('div'); simpleMsg.className = 'msg assistant';
           simpleMsg.innerHTML = '<div class=\"msg-body\"><div class=\"msg-text\"></div></div>';
           document.getElementById('msgList').appendChild(simpleMsg);
+        }
+        // 内容开始 → 标记前一个 think-block 完成
+        var prevThink = simpleMsg.querySelector('.think-block:last-child');
+        if(prevThink && prevThink.getAttribute('data-done')!=='1'){
+          prevThink.setAttribute('data-done','1');
+          prevThink.style.borderLeftColor = '#e5e7eb';
         }
         var cur = simpleMsg.querySelector('.msg-text').getAttribute('data-raw') || ''; cur += d.c; simpleMsg.querySelector('.msg-text').setAttribute('data-raw', cur); simpleMsg.querySelector('.msg-text').innerHTML = renderMD(cur);
         scrollDown();

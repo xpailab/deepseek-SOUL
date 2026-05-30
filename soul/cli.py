@@ -98,6 +98,8 @@ async def _stream_chat(agent: Agent, user_input: str, session_id: str) -> str:
     async def _run():
         nonlocal full_response
         async for chunk in agent.chat_stream(user_input, session_id=session_id):
+            if chunk.reasoning_content:
+                console.print(f"[dim italic]{chunk.reasoning_content}[/dim italic]", end="")
             if chunk.content:
                 console.print(chunk.content, end="")
                 full_response += chunk.content

@@ -155,10 +155,11 @@ class OpenAIAdapter(BaseAdapter):
                         reasoning = delta.get("reasoning_content", "")
                         if raw_content:
                             had_content = True
-                            yield StreamChunk(content=raw_content)
+                            yield StreamChunk(content=raw_content, reasoning_content=reasoning or "")
                         elif reasoning:
                             had_content = True
-                            yield StreamChunk(content=reasoning, reasoning_content=reasoning)
+                            # 纯思考模型：reasoning 即回复，不重复设置 reasoning_content
+                            yield StreamChunk(content=reasoning, reasoning_content="")
 
                         if "tool_calls" in delta:
                             had_content = True
