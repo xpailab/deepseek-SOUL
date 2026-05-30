@@ -253,6 +253,78 @@ class Agent:
             "acquired": acquired,
         }
 
+    @staticmethod
+    def _fmt_tool_for_context(tool_name: str, success: bool, result: Any, error: str = "") -> str:
+        """智能格式化工具结果用于 LLM 上下文——成功时摘要，失败时保留细节。
+
+        目标：将上下文中的工具输出压缩到原来的 ~1/5，同时不丢失关键信息。
+        """
+        # 失败 → 保留完整错误
+        if not success:
+            err_text = error or str(result)[:2000]
+            return f"[失败] {err_text}"
+
+        raw = str(result) if not isinstance(result, str) else result
+
+        if tool_name == "bash":
+            return Agent._fmt_bash_result(raw)
+        elif tool_name in ("file", "read_file", "write_file"):
+            return Agent._fmt_file_result(tool_name, raw)
+        elif tool_name in ("web", "browser"):
+            return Agent._fmt_web_result(raw)
+        else:
+            return Agent._fmt_generic_result(raw)
+
+    @staticmethod
+    def _fmt_bash_result(raw: str) -> str:
+        """bash 输出：去 ANSI，保留 exit_code + 最后 30 行。"""
+        import re
+        # 去 ANSI 转义码
+        clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw)
+        # 去回车覆盖（进度条残留）
+        clean = re.sub(r'\r.*?(\n|$)', '\n', clean)
+        lines = [l for l in clean.split('\n') if l.strip()]
+        # 提取 exit_code
+        exit_code = "0"
+        if "exit_code" in raw or "exit=" in raw:
+            m = re.search(r'exit[= ]*(\d+)', str(raw))
+            if m:
+                exit_code = m.group(1)
+        # 成功：保留最后 30 行（最有价值的信息在末尾）
+        if len(lines) > 30:
+            kept = lines[-30:]
+            summary = f"[exit={exit_code}] （共 {len(lines)} 行，保留最后 30 行）:\n" + "\n".join(kept)
+        else:
+            summary = f"[exit={exit_code}]\n" + "\n".join(lines)
+        # 截断单行过长
+        return summary[:3000]
+
+    @staticmethod
+    def _fmt_file_result(tool_name: str, raw: str) -> str:
+        """文件操作：读保留头尾，写只报成功。"""
+        if tool_name == "write_file":
+            return "[写入成功]"
+        lines = raw.split('\n')
+        if len(lines) <= 20:
+            return raw[:3000]
+        # 保留前 8 行 + 后 5 行 + 总行数
+        head = '\n'.join(lines[:8])
+        tail = '\n'.join(lines[-5:])
+        return f"[{len(lines)} 行文件]\n{head}\n...\n{tail}"[:3000]
+
+    @staticmethod
+    def _fmt_web_result(raw: str) -> str:
+        """web 结果：保留状态 + 前 500 字符。"""
+        return raw[:500]
+
+    @staticmethod
+    def _fmt_generic_result(raw: str) -> str:
+        """通用：去噪音，限制长度。"""
+        import re
+        clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw)
+        clean = re.sub(r'\r[^\n]*', '', clean)
+        return clean[:1000]
+
     async def _process_round_results(
         self,
         tool_calls: list[ToolCall],
@@ -292,9 +364,12 @@ class Agent:
         current_messages.append(assistant_msg)
 
         for tr in round_results:
+            context_text = self._fmt_tool_for_context(
+                tr.name, tr.success, tr.result, tr.error,
+            )
             tool_msg = Message(
                 role=MessageRole.TOOL,
-                content=str(tr.result)[:4000] if tr.success else (tr.error or "执行失败"),
+                content=context_text,
                 metadata={"tool_call_id": tr.call_id, "tool_name": tr.name},
             )
             current_messages.append(tool_msg)
