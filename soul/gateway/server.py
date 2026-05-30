@@ -824,10 +824,14 @@ function toast(t) {
         if(!lastThink || lastThink.getAttribute('data-done')==='1'){
           lastThink = document.createElement('div');
           lastThink.className = 'think-block';
-          lastThink.style.cssText = 'font-size:.82rem;color:#9ca3af;font-style:italic;margin:4px 0;padding:4px 0;border-left:2px solid #d1d5db;padding-left:10px;';
-          think.appendChild(lastThink);
+          lastThink.style.cssText = 'font-size:.82rem;color:#9ca3af;font-style:italic;margin:4px 0 8px;padding:6px 10px;border-left:2px solid #d1d5db;';
+          lastThink.innerHTML = '<div style=\"font-size:.68rem;color:#b0b7c3;font-style:normal;margin-bottom:3px;letter-spacing:.5px;\">💭 思考过程</div><span class=\"think-text\"></span>';
+          // 思考过程插在回复文字上方
+          var msgText = think.querySelector('.msg-text');
+          think.insertBefore(lastThink, msgText);
         }
-        lastThink.textContent += d.th;
+        var thinkText = lastThink.querySelector('.think-text');
+        thinkText.textContent += d.th;
         scrollDown();
       }
       if(d.c){
@@ -846,11 +850,15 @@ function toast(t) {
           simpleMsg.innerHTML = '<div class=\"msg-body\"><div class=\"msg-text\"></div></div>';
           document.getElementById('msgList').appendChild(simpleMsg);
         }
-        // 内容开始 → 标记前一个 think-block 完成
+        // 内容开始 → 标记前一个 think-block 完成，插入分隔
         var prevThink = simpleMsg.querySelector('.think-block:last-child');
         if(prevThink && prevThink.getAttribute('data-done')!=='1'){
           prevThink.setAttribute('data-done','1');
           prevThink.style.borderLeftColor = '#e5e7eb';
+          var sep = document.createElement('div');
+          sep.style.cssText = 'font-size:.65rem;color:#b0b7c3;margin:2px 0 6px;padding-left:10px;';
+          sep.textContent = '⬇ 回复';
+          prevThink.parentNode.insertBefore(sep, prevThink.nextSibling);
         }
         var cur = simpleMsg.querySelector('.msg-text').getAttribute('data-raw') || ''; cur += d.c; simpleMsg.querySelector('.msg-text').setAttribute('data-raw', cur); simpleMsg.querySelector('.msg-text').innerHTML = renderMD(cur);
         scrollDown();
