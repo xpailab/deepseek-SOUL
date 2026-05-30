@@ -832,7 +832,7 @@ function toast(t) {
       }
       if(d.c){
         // 后端确认的插入指令 → 特殊样式展示
-        if(d.c.indexOf('[注入指令:')===0 || d.c.indexOf('\n[注入指令:')>=0){
+        if(d.c.indexOf('[注入指令:')===0 || d.c.indexOf('\\n[注入指令:')>=0){
           var steerDiv = document.createElement('div');
           steerDiv.className = 'msg steer-confirm';
           steerDiv.innerHTML = '<div class="msg-body"><div class="msg-text" style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:5px 10px;font-size:.78rem;color:#92400e;margin:4px 0;">✅ 模型已收到: '+escHtml(d.c.replace(/^\\n?\\[注入指令:\\s*/,'').replace(/\\n$/,''))+'</div></div>';
