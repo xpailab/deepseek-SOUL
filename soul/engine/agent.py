@@ -1136,7 +1136,7 @@ class Agent:
         is_multi_turn = len(history) >= 2  # 至少一轮完整对话
 
         if is_multi_turn:
-            # 多轮对话：极简规则 + 项目上下文（如有）——对话历史包含全部上下文
+            # 多轮对话：保留核心行为规则 + 对话历史包含之前上下文
             import platform
             base_system_prompt = (
                 "<agent_rules>\n"
@@ -1144,7 +1144,11 @@ class Agent:
                 "- 对话历史中已有之前的完整上下文，直接基于历史回答\n"
                 "- 当前系统: " + platform.system() + "\n"
                 "- 遇到错误时分析根因，不要盲目重试\n"
+                "- 如果同一方法连续失败 2 次，切换到完全不同的替代方案\n"
                 "- 直接做事，完成后简要总结\n"
+                "- 文件操作使用 file 工具而非 bash，避免路径权限问题\n"
+                "- 每次修改代码文件后，必须运行对应的编译/语法检查验证\n"
+                "- 对话/问候直接文字回复，不要调工具\n"
                 "</agent_rules>"
             )
             if system_prompt:
@@ -1228,6 +1232,11 @@ class Agent:
         )
         final_content = final_content + "\n\n" + report if final_content else report
 
+        # 先存用户消息（它在 saved_len 之前，必须显式存入）
+        await self.sessions.add_message(
+            session_id,
+            Message(role=MessageRole.USER, content=user_message),
+        )
         for msg in current_messages[saved_len:]:
             await self.sessions.add_message(session_id, msg)
 
