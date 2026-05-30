@@ -93,6 +93,24 @@ deepsoul config llm.model deepseek-v4-pro
 # 支持: deepseek / claude / openai
 ```
 
+### 2.1 使用本地模型（LM Studio / Ollama / vLLM）
+```bash
+# 无需 API Key，任何 OpenAI 兼容服务均可接入
+deepsoul config llm.provider openai
+deepsoul config llm.api_base http://localhost:1234/v1   # LM Studio 默认端口
+deepsoul config llm.model llama-3-8b                     # LM Studio 中显示的模型名
+
+# Ollama 示例
+deepsoul config llm.provider openai
+deepsoul config llm.api_base http://localhost:11434/v1
+deepsoul config llm.model qwen2.5:7b
+
+# 也可用环境变量（不写配置文件）
+export SOUL_LLM_PROVIDER=openai
+export SOUL_LLM_API_BASE=http://localhost:1234/v1
+export SOUL_LLM_MODEL=llama-3-8b
+```
+
 ### 3. 开始使用
 ```bash
 deepsoul chat                         # 交互式对话
